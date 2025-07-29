@@ -1,0 +1,96 @@
+---
+description: Testing and debugging guidance for the Slack Export extension
+---
+
+# Testing & Debugging Guide
+
+## Extension Installation & Testing
+
+**Load for development**:
+
+1. Go to `chrome://extensions/`
+2. Enable "Developer mode"
+3. Click "Load unpacked" → select project folder
+4. Extension icon appears in toolbar
+
+**Reload after changes**:
+
+- Click reload button on extension card in `chrome://extensions/`
+- Or use `Ctrl+R` on extensions page
+
+## Testing Workflow
+
+**Basic functionality test**:
+
+1. Navigate to any Slack workspace (*.slack.com)
+2. Open a channel with visible messages
+3. Click extension icon
+4. Verify success notification appears
+5. Check Downloads/slack-exports/ for generated file
+6. Open file to verify markdown format
+
+**Edge cases to test**:
+
+- Empty channels (should show "No messages found")
+- Channels with only system messages
+- Messages with code blocks and links
+- Threaded conversations
+- Very long messages
+- Special characters in channel names
+
+## Debugging Tools
+
+**Console logging locations**:
+
+- **Background script**: Right-click extension icon → "Inspect popup" → Console
+- **Content script**: F12 on Slack page → Console
+- **Options page**: F12 on options page → Console
+
+**Key log messages to monitor**:
+
+- "Extension icon clicked, starting export for tab: {id}"
+- "Found {N} messages using selector: {selector}"
+- "Extracted {N} valid messages"
+- "Export completed successfully" or error messages
+
+## Common Issues & Solutions
+
+**"No messages found"**:
+
+- Check if selectors in [src/content.js](mdc:src/content.js) match current Slack DOM
+- Verify content script is injected (check console for "Slack Export content script loaded")
+- Try scrolling to load more messages
+
+**Download fails**:
+
+- Check downloads permission in `chrome://extensions/`
+- Verify Downloads folder is accessible
+- Check for filename validation errors
+
+**Extension not triggering**:
+
+- Verify activeTab permission granted
+- Check if URL matches *.slack.com pattern
+- Ensure background script is running (no errors in console)
+
+**DOM extraction failures**:
+
+- Slack updates may break selectors
+- Add new selectors to fallback arrays in [src/content.js](mdc:src/content.js)
+- Test with different Slack workspace themes (light/dark)
+
+## Performance Monitoring
+
+- Monitor export time for large message sets
+- Check memory usage during DOM parsing
+- Verify cleanup of temporary blob URLs
+- Test with virtual scrolling (messages loaded dynamically)
+
+## Version Testing
+
+Test across different environments:
+
+- Multiple Slack workspaces
+- Different Chrome versions  
+- Light and dark Slack themes
+- Different screen sizes/zoom levels

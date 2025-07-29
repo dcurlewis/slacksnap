@@ -1,0 +1,53 @@
+---
+globs: src/*.js,manifest.json,options.*
+---
+
+# Chrome Extension Development Patterns
+
+## Manifest V3 Requirements
+
+- Use **service worker** instead of background pages: [src/background.js](mdc:src/background.js)
+- **Host permissions** defined separately from permissions in [manifest.json](mdc:manifest.json)
+- **Content scripts** must be declared in manifest, loaded on *.slack.com domains
+
+## Communication Patterns
+
+**Background ↔ Content Script**:
+
+```javascript
+// Background sends to content
+chrome.tabs.sendMessage(tabId, { action: 'EXPORT_MESSAGES' });
+
+// Content responds
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Handle message, call sendResponse({ success: true })
+  return true; // Important: indicates async response
+});
+```
+
+**Content ↔ Background**:
+
+```javascript
+// Content sends to background
+chrome.runtime.sendMessage({ action: 'DOWNLOAD_FILE', data: {...} });
+```
+
+## Storage API Usage
+
+- Use `chrome.storage.sync` for user preferences (syncs across devices)
+- Always provide fallback values: `await chrome.storage.sync.get(DEFAULT_CONFIG)`
+- Handle storage errors gracefully
+
+## Download API Pattern
+
+- Create Blob with content type
+- Use `URL.createObjectURL()` for blob URLs
+- Always clean up: `URL.revokeObjectURL(url)` after download
+- Use `saveAs: false` for automatic downloads
+
+## Error Handling
+
+- Wrap all Chrome API calls in try-catch
+- Log errors to console with descriptive messages
+- Show user-friendly notifications for failures
+- Return error responses in message handlers

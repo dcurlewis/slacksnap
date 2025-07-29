@@ -1,0 +1,25 @@
+# Chrome Extension specific
+*.crx
+*.pem
+.DS_Store
+
+# Development files
+.vscode/
+.idea/
+*.log
+
+# Node modules (if any build tools are added later)
+node_modules/
+package-lock.json
+
+# Temporary files
+*.tmp
+*.temp
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+
+# Archive files
+*.zip
+*.rar 

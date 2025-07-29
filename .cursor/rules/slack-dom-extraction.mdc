@@ -1,0 +1,56 @@
+---
+globs: src/content.js
+---
+
+# Slack DOM Extraction Patterns
+
+## Selector Strategy
+
+Slack frequently changes DOM structure, so use **multiple fallback selectors**:
+
+**Message containers** (try in order):
+
+- `[role="message"]` - Standard accessibility role
+- `[data-qa="message_container"]` - Slack's test attributes
+- `.c-message_kit__gutter` - CSS class patterns
+- `.c-virtual_list__item` - Virtual scrolling containers
+
+**Message content**:
+
+- `[data-qa="message_content"]`
+- `.c-message__body`
+- `.p-rich_text_section`
+
+**Sender names**:
+
+- `[data-qa="message_sender"]`
+- `.c-message__sender`
+- `button[data-qa*="user"]`
+
+**Timestamps**:
+
+- `time[datetime]` - Preferred (ISO format)
+- `[data-qa="message_time"]`
+- `.c-timestamp`
+
+## Extraction Best Practices
+
+1. **Filter meaningful content**: Only export messages with actual text content
+2. **Sort by timestamp**: Messages may not be in DOM order
+3. **Handle missing elements**: Not all messages have all fields (system messages, etc.)
+4. **Preserve formatting**: Extract code blocks with triple backticks
+5. **Thread support**: Look for nested thread containers
+
+## Content Processing
+
+- **Clean whitespace**: Remove extra spaces and normalize line breaks
+- **Escape markdown**: Prevent user content from breaking markdown syntax
+- **Handle links**: Convert `<a>` tags to `[text](url)` format
+- **Code blocks**: Wrap `<pre>`, `<code>` content in markdown code blocks
+
+## Robustness
+
+- **Multiple attempts**: Try different selectors if first fails
+- **Graceful degradation**: Extract what's possible, don't fail entirely
+- **Console logging**: Log selector success/failure for debugging
+- **Fallback text**: Use `element.textContent` if specific selectors fail

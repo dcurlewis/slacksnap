@@ -1,0 +1,70 @@
+---
+globs: src/content.js,src/utils.js
+---
+
+# Markdown Export Formatting
+
+## Export Structure
+
+Generated markdown follows this pattern:
+
+```markdown
+# Slack Export: {channel-name}
+*Exported: {datetime}*
+
+---
+
+**Sender Name** (timestamp):
+Message content here...
+
+**Thread Replies:**
+  • **Reply Sender**: Reply content
+```
+
+## Content Processing
+
+**Text cleaning** (in [src/utils.js](mdc:src/utils.js)):
+
+- Remove extra whitespace and normalize line breaks
+- Replace non-breaking spaces with regular spaces
+- Trim leading/trailing whitespace
+
+**Markdown escaping**:
+
+- Escape special characters: `* _` ~ [ ] ( ) ! # |`
+- Preserve intentional formatting
+- Handle backslashes properly
+
+## Special Content Types
+
+**Code blocks**:
+
+- Detect `<pre>`, `<code>`, `.c-mrkdwn__code` elements
+- Wrap in triple backticks: ````\n{code}\n````
+- Preserve original formatting
+
+**Links**:
+
+- Convert `<a href="url">text</a>` to `[text](url)`
+- Skip anchor links (href="#...")
+- Preserve link text if URL extraction fails
+
+**Thread replies**:
+
+- Indent with bullet points
+- Include sender name in bold
+- Maintain chronological order
+
+## Timestamp Formatting
+
+- **Input**: ISO datetime or Slack's time format
+- **Output**: Human-readable format like "10:15 AM"
+- **Fallback**: Use original string if parsing fails
+- **Configuration**: Controlled by `includeTimestamps` setting
+
+## File Generation
+
+- **Filename**: Based on template in config
+- **Content-Type**: `text/markdown`
+- **Encoding**: UTF-8
+- **Download**: Via Chrome downloads API with automatic save

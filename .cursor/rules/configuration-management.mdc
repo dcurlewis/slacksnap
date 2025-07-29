@@ -1,0 +1,62 @@
+---
+globs: src/config.js,options.*
+---
+
+# Configuration Management
+
+## Settings Architecture
+
+**Configuration flow**: [src/config.js](mdc:src/config.js) ↔ Chrome Storage ↔ [options.html](mdc:options.html)
+
+## Default Configuration
+
+Always define defaults in [src/config.js](mdc:src/config.js):
+
+```javascript
+const DEFAULT_CONFIG = {
+  downloadDirectory: "slack-exports",
+  fileNameFormat: "YYYYMMDD-HHmm-{channel}.md",
+  includeTimestamps: true,
+  includeThreadReplies: true
+};
+```
+
+## Storage Patterns
+
+**Reading config**:
+
+```javascript
+const config = await chrome.storage.sync.get(DEFAULT_CONFIG);
+// Result automatically merges with defaults for missing keys
+```
+
+**Saving config**:
+
+```javascript
+await chrome.storage.sync.set(newConfig);
+```
+
+## Options Page Integration
+
+- **Load on page ready**: Populate form fields from stored config
+- **Save on form submit**: Validate and store form data
+- **Reset functionality**: Restore defaults and save
+- **User feedback**: Show status messages for save/error states
+
+## Filename Template System
+
+Template format: `"YYYYMMDD-HHmm-{channel}.md"`
+
+**Replacement tokens**:
+
+- `YYYY`, `MM`, `DD`, `HH`, `mm` - Date/time components
+- `{channel}` - Sanitized channel name
+
+**Implementation**: See `generateFilename()` in [src/utils.js](mdc:src/utils.js)
+
+## Validation
+
+- **Sanitize filenames**: Remove invalid filesystem characters
+- **Validate directories**: Ensure directory names are valid
+- **Fallback values**: Always provide sensible defaults
+- **Error handling**: Graceful failure with user notification
