@@ -1,6 +1,6 @@
 # SlackSnap
 
-A Chrome extension that exports Slack messages to markdown files. Does what it says on the tin, really.
+A Chrome extension that exports Slack messages to markdown files. Does what it says on the tin, really. Wrote a blog post about it [here](https://curlewis.co.nz/2025/08/05/i-built-another-thing-extract-slack/).
 
 I built this because I got tired of copy-pasting Slack conversations when I wanted to analyse them with Claude or other tools. If you're going to export chat data, you might as well do it properly.
 
