@@ -160,6 +160,61 @@
             
             <div id="status" class="status" style="display: none;"></div>
         </form>
+
+        <hr style="margin: 30px 0; border: none; border-top: 2px solid #4a154b;">
+
+        <h2 style="color: #333; margin-bottom: 10px;">Batch Export Channels</h2>
+        <p style="font-size: 12px; color: #666; margin-bottom: 15px;">
+            Configure channels for batch export. Each channel needs a <strong>channelId</strong> 
+            (found in the URL when viewing a channel, e.g. <code>C0123456789</code>). 
+            Edit the JSON below or use the form to add channels.
+        </p>
+
+        <!-- Add channel form -->
+        <div style="background: #f9f9f9; padding: 15px; border-radius: 6px; margin-bottom: 15px; border: 1px solid #eee;">
+            <h3 style="font-size: 14px; margin-bottom: 10px; color: #333;">Add Channel</h3>
+            <div class="form-group" style="margin-bottom: 10px;">
+                <label for="newChannelName" style="font-size: 13px;">Name:</label>
+                <input type="text" id="newChannelName" placeholder="e.g. team-general" style="width: 100%;">
+            </div>
+            <div class="form-group" style="margin-bottom: 10px;">
+                <label for="newChannelId" style="font-size: 13px;">Channel ID:</label>
+                <input type="text" id="newChannelId" placeholder="e.g. C0123456789" style="width: 100%;">
+            </div>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <div style="flex: 1;">
+                    <label for="newChannelTier" style="font-size: 13px;">Tier:</label>
+                    <select id="newChannelTier" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                        <option value="1">Tier 1</option>
+                        <option value="2">Tier 2</option>
+                        <option value="3">Tier 3</option>
+                    </select>
+                </div>
+                <div style="flex: 1;">
+                    <label for="newChannelType" style="font-size: 13px;">Type:</label>
+                    <select id="newChannelType" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                        <option value="channel">Channel</option>
+                        <option value="dm">DM</option>
+                        <option value="group">Group</option>
+                    </select>
+                </div>
+            </div>
+            <button type="button" id="addChannelBtn" class="save-btn" style="width: 100%; padding: 8px;">Add Channel</button>
+        </div>
+
+        <!-- Channel JSON editor -->
+        <div class="form-group">
+            <label for="channelsJson">Channel Configuration (JSON):</label>
+            <textarea id="channelsJson" rows="12" style="width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; font-family: 'SF Mono', Monaco, Consolas, monospace; resize: vertical;"></textarea>
+            <div class="description">
+                Each channel: { name, channelId, tier (1-3), type (channel|dm|group), enabled (true|false) }
+            </div>
+        </div>
+        <div class="buttons" style="margin-top: 15px;">
+            <button type="button" id="saveChannelsBtn" class="save-btn">Save Channels</button>
+            <button type="button" id="resetChannelsBtn" class="reset-btn">Reset to Defaults</button>
+        </div>
+        <div id="channelStatus" class="status" style="display: none;"></div>
     </div>
     
     <script src="src/config.js"></script>

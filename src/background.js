@@ -178,7 +178,10 @@ chrome.runtime.onInstalled.addListener((details) => {
       fileNameFormat: "YYYYMMDD-HHmm-{channel}.md",
       includeTimestamps: true,
       includeThreadReplies: true,
-      historyDays: 7
+      historyDays: 7,
+      channels: [],
+      lastExportTimestamps: {},
+      combinedExport: false
     });
   }
 }); 

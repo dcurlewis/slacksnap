@@ -1,25 +1,8 @@
-# Chrome Extension specific
-*.crx
-*.pem
+# Personal channel configuration (contains real channel IDs and names)
+channels.local.json
+
+# Internal documentation
+docs/
+
+# macOS
 .DS_Store
-
-# Development files
-.vscode/
-.idea/
-*.log
-
-# Node modules (if any build tools are added later)
-node_modules/
-package-lock.json
-
-# Temporary files
-*.tmp
-*.temp
-
-# OS generated files
-Thumbs.db
-ehthumbs.db
-
-# Archive files
-*.zip
-*.rar 

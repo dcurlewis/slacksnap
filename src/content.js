@@ -47,6 +47,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Return true to indicate we'll respond asynchronously
     return true;
   }
+
+  if (message.action === 'BATCH_EXPORT_CHANNEL') {
+    console.log('📦 Batch export request for channel:', message.channelName);
+    const { channelId, channelName, oldestTimestamp } = message;
+    exportChannelViaAPI(channelId, channelName, oldestTimestamp)
+      .then(result => sendResponse({ success: true, ...result }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true; // async response
+  }
+
+  if (message.action === 'GET_CURRENT_CHANNEL') {
+    // Used by the popup's "Quick-add current channel" feature
+    const channelId = getCurrentChannelId();
+    const channelName = window.SlackSnapUtils ? window.SlackSnapUtils.extractChannelName() : null;
+    sendResponse({ channelId, channelName });
+    return;
+  }
   
   console.log('❓ Unknown message action:', message.action);
 });
@@ -746,7 +763,92 @@ function getCurrentChannelId() {
 }
 
 /**
+ * Export a specific channel via API (parameterized version for batch export)
+ * @param {string} channelId - The Slack channel ID to export
+ * @param {string} channelName - Human-readable channel name (used in markdown header)
+ * @param {number|null} oldestTimestamp - If provided, fetch messages since this Unix ms timestamp; otherwise use historyDays
+ * @returns {Promise<Object>} Result with messageCount, markdown, channelName
+ */
+async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = null) {
+  const config = await getConfig();
+  const { token } = getSlackAuthToken();
+
+  const oldestUnix = oldestTimestamp
+    ? Math.floor(oldestTimestamp / 1000)
+    : Math.floor((Date.now() - (config.historyDays || 7) * 86400 * 1000) / 1000);
+
+  console.log(`📆 Export window for ${channelName}: since ${new Date(oldestUnix * 1000).toISOString()}`);
+  const apiMessages = await getMessagesViaHistoryAPI(channelId, oldestUnix, token);
+
+  if (!apiMessages || apiMessages.length === 0) {
+    console.log(`ℹ️ No messages found for ${channelName} in the selected date range.`);
+    return { messageCount: 0, markdown: '', channelName };
+  }
+
+  // Extract unique user IDs from messages
+  const userIds = new Set();
+  for (const msg of apiMessages) {
+    if (msg.user) userIds.add(msg.user);
+    const mentionMatches = (msg.text || '').match(/<@([A-Z0-9]+)>/g);
+    if (mentionMatches) {
+      mentionMatches.forEach(match => {
+        const userId = match.match(/<@([A-Z0-9]+)>/)[1];
+        userIds.add(userId);
+      });
+    }
+    if (config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0) {
+      const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token);
+      for (const reply of repliesRaw) {
+        if (reply.user) userIds.add(reply.user);
+        const replyMentions = (reply.text || '').match(/<@([A-Z0-9]+)>/g);
+        if (replyMentions) {
+          replyMentions.forEach(match => {
+            const userId = match.match(/<@([A-Z0-9]+)>/)[1];
+            userIds.add(userId);
+          });
+        }
+      }
+    }
+  }
+
+  console.log(`🎯 Need to fetch ${userIds.size} users for ${channelName}`);
+  const userMap = await fetchSpecificUsers(Array.from(userIds), token);
+
+  // Enrich messages with usernames and thread replies
+  const enrichedMessages = [];
+  for (const apiMsg of apiMessages) {
+    const sender = userMap[apiMsg.user] || 'Unknown User';
+    let content = window.SlackSnapUtils.cleanText(apiMsg.text || '');
+    content = content.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+
+    const threadReplies = [];
+    if (config.includeThreadReplies && apiMsg.thread_ts && apiMsg.reply_count > 0) {
+      const repliesRaw = await fetchThreadReplies(channelId, apiMsg.thread_ts, oldestUnix, token);
+      for (const reply of repliesRaw) {
+        if (reply.ts === apiMsg.thread_ts) continue;
+        const replySender = userMap[reply.user] || 'Unknown User';
+        let replyContent = window.SlackSnapUtils.cleanText(reply.text || '');
+        replyContent = replyContent.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+        threadReplies.push({ sender: replySender, content: replyContent, timestamp: reply.ts });
+      }
+    }
+
+    enrichedMessages.push({ sender, content, timestamp: apiMsg.ts, threadReplies });
+  }
+
+  const messages = enrichedMessages
+    .filter(msg => msg.content && msg.content.trim())
+    .sort((a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp));
+
+  const markdown = convertToMarkdown(messages, channelName, config);
+  console.log(`✅ Processed ${messages.length} messages for ${channelName}`);
+
+  return { messageCount: messages.length, markdown, channelName };
+}
+
+/**
  * Export messages using Slack's API for maximum reliability and efficiency
+ * (Single-channel export triggered by the legacy EXPORT_MESSAGES action)
  */
 async function exportMessagesViaAPI() {
   try {
@@ -754,138 +856,25 @@ async function exportMessagesViaAPI() {
     const config = await getConfig();
     window.SlackSnapUtils.showNotification('Getting messages via API...', 'success');
 
-    const { token } = getSlackAuthToken();
     const channelId = getCurrentChannelId();
     if (!channelId) throw new Error('Could not determine channel ID');
-    
-    // 1. Fetch messages first (this is fast)
-    const historyDays = config.historyDays || 7;
-    const oldestUnix = Math.floor((Date.now() - historyDays * 86400 * 1000) / 1000);
-    console.log(`📆 Export window: last ${historyDays} days (since ${new Date(oldestUnix * 1000).toISOString()})`);
-    const apiMessages = await getMessagesViaHistoryAPI(channelId, oldestUnix, token);
+    const channelName = window.SlackSnapUtils.extractChannelName();
 
-    if (!apiMessages || apiMessages.length === 0) {
+    const result = await exportChannelViaAPI(channelId, channelName);
+
+    if (result.messageCount === 0) {
       window.SlackSnapUtils.showNotification('No messages found in the selected date range.', 'success');
       return;
     }
 
-    // 2. Extract unique user IDs from messages (much smarter!)
-    const userIds = new Set();
-    for (const msg of apiMessages) {
-      if (msg.user) userIds.add(msg.user);
-      
-      // Also extract user IDs from @mentions in text
-      const mentionMatches = (msg.text || '').match(/<@([A-Z0-9]+)>/g);
-      if (mentionMatches) {
-        mentionMatches.forEach(match => {
-          const userId = match.match(/<@([A-Z0-9]+)>/)[1];
-          userIds.add(userId);
-        });
-      }
-      
-      // If we're including thread replies, collect those user IDs too
-      if (config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0) {
-        const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token);
-        for (const reply of repliesRaw) {
-          if (reply.user) userIds.add(reply.user);
-          const replyMentions = (reply.text || '').match(/<@([A-Z0-9]+)>/g);
-          if (replyMentions) {
-            replyMentions.forEach(match => {
-              const userId = match.match(/<@([A-Z0-9]+)>/)[1];
-              userIds.add(userId);
-            });
-          }
-        }
-      }
-    }
-    
-    console.log(`🎯 Smart approach: Only need to fetch ${userIds.size} users (instead of all workspace users)`);
-    
-    // 3. Fetch only the users we actually need
-    const userMap = await fetchSpecificUsers(Array.from(userIds), token);
-
-    // 4. Enrich messages with usernames and thread replies.
-    const enrichedMessages = [];
-    let unknownUsers = new Set();
-    let resolvedUsers = new Set();
-    
-    for (const apiMsg of apiMessages) {
-      const sender = userMap[apiMsg.user] || 'Unknown User';
-      
-      // Track user resolution for debugging
-      if (sender === 'Unknown User') {
-        unknownUsers.add(apiMsg.user);
-      } else {
-        resolvedUsers.add(apiMsg.user);
-      }
-      
-      // Process message content with proper HTML entity decoding and @mention replacement
-      let content = window.SlackSnapUtils.cleanText(apiMsg.text || '');
-      content = content.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
-
-      const threadReplies = [];
-      if (config.includeThreadReplies && apiMsg.thread_ts && apiMsg.reply_count > 0) {
-        const repliesRaw = await fetchThreadReplies(channelId, apiMsg.thread_ts, oldestUnix, token);
-        for (const reply of repliesRaw) {
-          if (reply.ts === apiMsg.thread_ts) continue; // Skip parent message
-          
-          const replySender = userMap[reply.user] || 'Unknown User';
-          if (replySender === 'Unknown User') {
-            unknownUsers.add(reply.user);
-          } else {
-            resolvedUsers.add(reply.user);
-          }
-          
-          // Process reply content with proper HTML entity decoding and @mention replacement
-          let replyContent = window.SlackSnapUtils.cleanText(reply.text || '');
-          replyContent = replyContent.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
-          
-          threadReplies.push({
-            sender: replySender,
-            content: replyContent,
-            timestamp: reply.ts,
-          });
-        }
-      }
-
-      enrichedMessages.push({
-        sender,
-        content,
-        timestamp: apiMsg.ts,
-        threadReplies,
-      });
-    }
-    
-    // Debug user resolution results
-    console.log(`👥 User resolution summary:`);
-    console.log(`  ✅ Resolved users: ${resolvedUsers.size}`);
-    console.log(`  ❌ Unknown users: ${unknownUsers.size}`);
-    
-    if (unknownUsers.size > 0) {
-      console.log(`🔍 Unknown user IDs: ${Array.from(unknownUsers).slice(0, 10).join(', ')}${unknownUsers.size > 10 ? '...' : ''}`);
-    }
-    
-    if (resolvedUsers.size > 0) {
-      console.log(`✅ Sample resolved users: ${Array.from(resolvedUsers).slice(0, 5).map(id => `${id}:${userMap[id]}`).join(', ')}`);
-    }
-    
-    const messages = enrichedMessages
-      .filter(msg => msg.content && msg.content.trim())
-      .sort((a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp));
-
-    // 5. Convert to markdown and download.
-    const channelName = window.SlackSnapUtils.extractChannelName();
-    const markdown = convertToMarkdown(messages, channelName, config);
     const filename = window.SlackSnapUtils.generateFilename(channelName, config);
-    
-    console.log(`✅ Processed ${messages.length} messages.`);
-    
+
     chrome.runtime.sendMessage({
       action: 'DOWNLOAD_FILE',
-      data: { filename, content: markdown, directory: config.downloadDirectory }
+      data: { filename, content: result.markdown, directory: config.downloadDirectory }
     }, (res) => {
       if (res && res.success) {
-        window.SlackSnapUtils.showNotification(`✅ Exported ${messages.length} messages to ${filename}`, 'success');
+        window.SlackSnapUtils.showNotification(`✅ Exported ${result.messageCount} messages to ${filename}`, 'success');
       } else {
         window.SlackSnapUtils.showNotification(`❌ Download failed: ${res?.error || 'Unknown error'}`, 'error');
       }

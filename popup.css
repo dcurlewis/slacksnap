@@ -1,0 +1,350 @@
+/* SlackSnap Batch Export Popup */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, sans-serif;
+  font-size: 13px;
+  color: #1d1c1d;
+  background: #fff;
+  width: 380px;
+  min-height: 200px;
+}
+
+.popup-container {
+  display: flex;
+  flex-direction: column;
+  max-height: 550px;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e8e8e8;
+  background: #4a154b;
+  color: #fff;
+}
+
+.header-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.8);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-btn:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.15);
+}
+
+/* Warning */
+.warning {
+  padding: 16px;
+  text-align: center;
+  color: #666;
+}
+
+.warning p {
+  margin-bottom: 6px;
+}
+
+.hint {
+  font-size: 11px;
+  color: #999;
+}
+
+.hint a {
+  color: #4a154b;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Channel list */
+.channel-list {
+  overflow-y: auto;
+  max-height: 380px;
+  padding: 4px 0;
+}
+
+/* Tier group */
+.tier-group {
+  margin-bottom: 2px;
+}
+
+.tier-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 16px;
+  background: #f8f8f8;
+  border-bottom: 1px solid #eee;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tier-header:hover {
+  background: #f0f0f0;
+}
+
+.tier-header input[type="checkbox"] {
+  margin-right: 8px;
+  accent-color: #4a154b;
+  cursor: pointer;
+}
+
+.tier-header label {
+  font-weight: 600;
+  font-size: 12px;
+  color: #616061;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  flex: 1;
+}
+
+/* Channel item */
+.channel-item {
+  display: flex;
+  align-items: center;
+  padding: 5px 16px 5px 32px;
+  border-bottom: 1px solid #f5f5f5;
+  transition: background 0.1s;
+}
+
+.channel-item:hover {
+  background: #f8f8f8;
+}
+
+.channel-item.disabled {
+  opacity: 0.45;
+}
+
+.channel-item.no-id {
+  opacity: 0.55;
+}
+
+.channel-item input[type="checkbox"] {
+  margin-right: 8px;
+  accent-color: #4a154b;
+  cursor: pointer;
+}
+
+.channel-name {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-name .type-icon {
+  font-size: 11px;
+  margin-right: 3px;
+  color: #999;
+}
+
+.channel-meta {
+  font-size: 11px;
+  color: #999;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+/* Channel status icons during export */
+.channel-status {
+  margin-left: 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+}
+
+.channel-status.success {
+  color: #2eb67d;
+}
+
+.channel-status.error {
+  color: #e01e5a;
+}
+
+.channel-status.active {
+  color: #ecb22e;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ddd;
+  border-top-color: #4a154b;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* No channels */
+.no-channels {
+  padding: 24px 16px;
+  text-align: center;
+  color: #666;
+}
+
+.no-channels p {
+  margin-bottom: 6px;
+}
+
+/* Quick add */
+.quick-add {
+  padding: 6px 16px;
+  border-top: 1px solid #eee;
+}
+
+.quick-add-btn {
+  background: none;
+  border: 1px dashed #ccc;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #666;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+.quick-add-btn:hover {
+  border-color: #4a154b;
+  color: #4a154b;
+  background: #faf5fb;
+}
+
+.quick-add-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Export controls */
+.export-controls {
+  padding: 10px 16px;
+  border-top: 1px solid #e8e8e8;
+  background: #fafafa;
+}
+
+.combined-option {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.combined-option input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: #4a154b;
+  cursor: pointer;
+}
+
+.export-btn {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  background: #4a154b;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: #611f69;
+}
+
+.export-btn:disabled {
+  background: #c4b5c5;
+  cursor: default;
+}
+
+/* Progress */
+.progress-section {
+  padding: 12px 16px;
+  border-top: 1px solid #e8e8e8;
+  background: #fafafa;
+}
+
+.progress-bar-container {
+  height: 6px;
+  background: #e8e8e8;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-bar {
+  height: 100%;
+  background: #4a154b;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: #666;
+  text-align: center;
+}
+
+/* Summary */
+.summary-section {
+  padding: 10px 16px;
+  border-top: 1px solid #e8e8e8;
+  background: #f0faf4;
+  font-size: 12px;
+  color: #1a7f37;
+  text-align: center;
+}
+
+.summary-section.has-errors {
+  background: #fff8f0;
+  color: #9a6700;
+}
+
+/* Scrollbar styling */
+.channel-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.channel-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.channel-list::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 3px;
+}
+
+.channel-list::-webkit-scrollbar-thumb:hover {
+  background: #aaa;
+}

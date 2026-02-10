@@ -22,7 +22,8 @@
     }
   ],
   "action": {
-    "default_title": "Export with SlackSnap",
+    "default_popup": "popup.html",
+    "default_title": "SlackSnap - Batch Export",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
