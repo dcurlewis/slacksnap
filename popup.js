@@ -256,40 +256,69 @@ async function exportSelected() {
       });
 
       if (response && response.success) {
-        if (response.messageCount > 0) {
-          // Ensure markdown exists before downloading
-          if (!response.markdown || !response.markdown.trim()) {
-            console.error(`❌ No markdown content for ${channel.name} (${response.messageCount} messages)`);
-            setChannelStatus(channel.channelId, 'error');
-            results.push({ channel: channel.name, success: false, error: 'Markdown generation failed - no content' });
-            continue;
+        // Always download markdown file, regardless of message count
+        // Ensure markdown exists - generate fallback if missing
+        let markdownToDownload = response.markdown;
+        if (!markdownToDownload || !markdownToDownload.trim()) {
+          console.warn(`⚠️ No markdown content for ${channel.name}, generating fallback...`);
+          const now = new Date();
+          const exportTime = now.toLocaleString();
+          markdownToDownload = `# SlackSnap Export: ${channel.name}\n*Exported: ${exportTime}*\n\n---\n\n*Note: No messages found or export encountered errors*\n\n`;
+        }
+
+        console.log(`💾 Downloading markdown for ${channel.name} (${response.messageCount || 0} messages, ${markdownToDownload.length} chars)`);
+
+        // If content script already saved markdown, avoid duplicate file.
+        if (response.markdownSavedByContent) {
+          console.log(`✅ Markdown already saved by content script for ${channel.name}`);
+        } else {
+          // Trigger download via background script - always create file
+          // Retry download if it fails
+          let downloadSuccess = false;
+          let downloadError = null;
+          for (let retry = 0; retry < 3; retry++) {
+            try {
+              const downloadResponse = await chrome.runtime.sendMessage({
+                action: 'DOWNLOAD_FILE',
+                data: {
+                  filename: generateFilename(channel.name),
+                  content: markdownToDownload,
+                  directory: config.downloadDirectory || 'slack-exports'
+                }
+              });
+
+              if (downloadResponse && downloadResponse.success) {
+                downloadSuccess = true;
+                break;
+              } else {
+                downloadError = downloadResponse?.error || 'Download failed';
+                if (retry < 2) {
+                  console.warn(`⚠️ Download attempt ${retry + 1} failed, retrying...`);
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+              }
+            } catch (downloadErr) {
+              downloadError = downloadErr.message;
+              if (retry < 2) {
+                console.warn(`⚠️ Download attempt ${retry + 1} threw error, retrying...`);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
+            }
           }
 
-          console.log(`💾 Downloading markdown for ${channel.name} (${response.markdown.length} chars)`);
-          
-          // Trigger download via background script
-          const downloadResponse = await chrome.runtime.sendMessage({
-            action: 'DOWNLOAD_FILE',
-            data: {
-              filename: generateFilename(channel.name),
-              content: response.markdown,
-              directory: config.downloadDirectory || 'slack-exports'
-            }
-          });
-
-          if (!downloadResponse || !downloadResponse.success) {
-            console.error(`❌ Download failed for ${channel.name}:`, downloadResponse?.error);
+          if (!downloadSuccess) {
+            console.error(`❌ Download failed for ${channel.name} after 3 attempts:`, downloadError);
             setChannelStatus(channel.channelId, 'error');
-            results.push({ channel: channel.name, success: false, error: downloadResponse?.error || 'Download failed' });
+            results.push({ channel: channel.name, success: false, error: downloadError || 'Download failed' });
             continue;
           }
 
           console.log(`✅ Successfully downloaded markdown for ${channel.name}`);
+        }
 
-          // Accumulate for combined file
-          if (combinedExportCb.checked) {
-            combinedMarkdown += `\n\n---\n\n## ${channel.name}\n\n` + response.markdown.split('\n').slice(3).join('\n');
-          }
+        // Accumulate for combined file (only if there are messages)
+        if (combinedExportCb.checked && response.messageCount > 0) {
+          combinedMarkdown += `\n\n---\n\n## ${channel.name}\n\n` + response.markdown.split('\n').slice(3).join('\n');
         }
 
         // Update last exported timestamp

@@ -51,22 +51,80 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'BATCH_EXPORT_CHANNEL') {
     console.log('📦 Batch export request for channel:', message.channelName);
     const { channelId, channelName, oldestTimestamp } = message;
-    exportChannelViaAPI(channelId, channelName, oldestTimestamp)
-      .then(result => {
+    (async () => {
+      try {
+        const result = await exportChannelViaAPI(channelId, channelName, oldestTimestamp);
         console.log(`✅ Batch export completed for ${channelName}:`, {
           messageCount: result.messageCount,
           markdownLength: result.markdown?.length,
           hasMarkdown: !!result.markdown
         });
-        if (!result.markdown) {
-          console.error('❌ No markdown generated for', channelName);
+
+        let markdown = result.markdown;
+        if (!markdown || !markdown.trim()) {
+          console.warn('⚠️ No markdown generated for', channelName, '- generating fallback');
+          const config = await getConfig();
+          markdown = convertToMarkdown([], channelName, config);
         }
-        sendResponse({ success: true, ...result });
-      })
-      .catch(error => {
+
+        // Save markdown from content script too, so this does not depend on popup lifecycle.
+        let markdownSavedByContent = false;
+        let markdownSaveError = null;
+        try {
+          const saveRes = await saveBatchChannelMarkdown(channelName, markdown);
+          markdownSavedByContent = !!saveRes.success;
+          markdownSaveError = saveRes.error || null;
+        } catch (saveError) {
+          markdownSaveError = saveError.message;
+          console.warn(`⚠️ Failed to save markdown from content script for ${channelName}:`, saveError);
+        }
+
+        sendResponse({
+          success: true,
+          ...result,
+          markdown,
+          markdownSavedByContent,
+          markdownSaveError
+        });
+      } catch (error) {
         console.error('❌ Batch export error for', channelName, ':', error);
-        sendResponse({ success: false, error: error.message });
-      });
+        try {
+          const config = await getConfig();
+          const errorMarkdown = convertToMarkdown([], channelName, config);
+          const saveRes = await saveBatchChannelMarkdown(channelName, errorMarkdown);
+          sendResponse({
+            success: true,
+            messageCount: 0,
+            markdown: errorMarkdown,
+            channelName,
+            markdownSavedByContent: !!saveRes.success,
+            markdownSaveError: saveRes.error || null,
+            error: error.message
+          });
+        } catch (fallbackError) {
+          console.error('❌ Failed to generate fallback markdown:', fallbackError);
+          const minimalMarkdown = `# SlackSnap Export: ${channelName}\n*Exported: ${new Date().toLocaleString()}*\n\n---\n\n*Note: Export encountered errors: ${error.message}*\n\n`;
+          let saveErrorMessage = null;
+          let markdownSavedByContent = false;
+          try {
+            const saveRes = await saveBatchChannelMarkdown(channelName, minimalMarkdown);
+            markdownSavedByContent = !!saveRes.success;
+            saveErrorMessage = saveRes.error || null;
+          } catch (saveError) {
+            saveErrorMessage = saveError.message;
+          }
+          sendResponse({
+            success: true,
+            messageCount: 0,
+            markdown: minimalMarkdown,
+            channelName,
+            markdownSavedByContent,
+            markdownSaveError: saveErrorMessage,
+            error: error.message
+          });
+        }
+      }
+    })();
     return true; // async response
   }
 
@@ -576,6 +634,32 @@ function extractTextContent(element) {
 }
 
 /**
+ * Save per-channel batch markdown directly from content script.
+ * This prevents losing the main .md if popup closes during a long export.
+ * @param {string} channelName
+ * @param {string} markdown
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function saveBatchChannelMarkdown(channelName, markdown) {
+  const config = await getConfig();
+  const filename = window.SlackSnapUtils.generateFilename(channelName, config);
+  const response = await chrome.runtime.sendMessage({
+    action: 'DOWNLOAD_FILE',
+    data: {
+      filename,
+      content: markdown,
+      directory: config.downloadDirectory || 'slack-exports'
+    }
+  });
+
+  if (!response || !response.success) {
+    return { success: false, error: response?.error || 'DOWNLOAD_FILE failed' };
+  }
+
+  return { success: true };
+}
+
+/**
  * Convert messages to markdown format
  * @param {Array<Object>} messages - Array of message objects
  * @param {string} channelName - Channel name
@@ -1033,7 +1117,9 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
 
   if (!apiMessages || apiMessages.length === 0) {
     console.log(`ℹ️ No messages found for ${channelName} in the selected date range.`);
-    return { messageCount: 0, markdown: '', channelName };
+    // Always generate markdown file, even if empty - ensures file is created
+    const emptyMarkdown = convertToMarkdown([], channelName, config);
+    return { messageCount: 0, markdown: emptyMarkdown, channelName };
   }
 
   // Extract unique user IDs from messages and cache thread replies
@@ -1174,18 +1260,27 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     .sort((a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp));
 
   // Download files before generating markdown
-  const fileMap = await downloadFiles(filesToDownload, channelName, token, config);
-  
-  // Update file references in messages to use local paths (strip base directory)
-  const baseDirectory = config.downloadDirectory || 'slack-exports';
-  updateFileReferencesInMessages(messages, fileMap, baseDirectory);
+  // Wrap in try-catch to ensure markdown is still generated even if file downloads fail
+  let fileMap = {};
+  try {
+    fileMap = await downloadFiles(filesToDownload, channelName, token, config);
+    
+    // Update file references in messages to use local paths (strip base directory)
+    const baseDirectory = config.downloadDirectory || 'slack-exports';
+    updateFileReferencesInMessages(messages, fileMap, baseDirectory);
+  } catch (fileDownloadError) {
+    console.error(`⚠️ File download failed for ${channelName}, but continuing with markdown generation:`, fileDownloadError);
+    // Continue without updating file references - markdown will use original URLs
+  }
 
   const markdown = convertToMarkdown(messages, channelName, config);
   
-  // Ensure markdown is always a string
-  if (!markdown || typeof markdown !== 'string') {
+  // Ensure markdown is always a string and non-empty (should always have at least header)
+  if (!markdown || typeof markdown !== 'string' || !markdown.trim()) {
     console.error(`❌ Markdown generation failed for ${channelName} - got:`, typeof markdown, markdown);
-    throw new Error(`Failed to generate markdown for ${channelName}`);
+    // Fallback: generate minimal markdown to ensure file is created
+    const fallbackMarkdown = convertToMarkdown([], channelName, config);
+    return { messageCount: messages.length, markdown: fallbackMarkdown, channelName };
   }
   
   console.log(`✅ Processed ${messages.length} messages for ${channelName} (markdown: ${markdown.length} chars)`);
