@@ -257,8 +257,18 @@ async function exportSelected() {
 
       if (response && response.success) {
         if (response.messageCount > 0) {
+          // Ensure markdown exists before downloading
+          if (!response.markdown || !response.markdown.trim()) {
+            console.error(`❌ No markdown content for ${channel.name} (${response.messageCount} messages)`);
+            setChannelStatus(channel.channelId, 'error');
+            results.push({ channel: channel.name, success: false, error: 'Markdown generation failed - no content' });
+            continue;
+          }
+
+          console.log(`💾 Downloading markdown for ${channel.name} (${response.markdown.length} chars)`);
+          
           // Trigger download via background script
-          await chrome.runtime.sendMessage({
+          const downloadResponse = await chrome.runtime.sendMessage({
             action: 'DOWNLOAD_FILE',
             data: {
               filename: generateFilename(channel.name),
@@ -266,6 +276,15 @@ async function exportSelected() {
               directory: config.downloadDirectory || 'slack-exports'
             }
           });
+
+          if (!downloadResponse || !downloadResponse.success) {
+            console.error(`❌ Download failed for ${channel.name}:`, downloadResponse?.error);
+            setChannelStatus(channel.channelId, 'error');
+            results.push({ channel: channel.name, success: false, error: downloadResponse?.error || 'Download failed' });
+            continue;
+          }
+
+          console.log(`✅ Successfully downloaded markdown for ${channel.name}`);
 
           // Accumulate for combined file
           if (combinedExportCb.checked) {

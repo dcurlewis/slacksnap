@@ -191,29 +191,41 @@ async function handleFileDownload(data) {
 
 /**
  * Handle Slack file download (fetches file from Slack and downloads it)
- * @param {Object} data - Download data containing fileUrl, filename, mimetype, and token
+ * Tries files.download API endpoint first, falls back to direct URL
+ * @param {Object} data - Download data containing fileId, fileUrl, filename, mimetype, and token
  * @returns {Promise<void>}
  */
 async function handleSlackFileDownload(data) {
   try {
     console.log('📥 Starting Slack file download...');
-    const { fileUrl, filename, mimetype, token } = data;
+    const { fileId, fileUrl, filename, mimetype, token } = data;
     console.log('Slack file download details:', {
       filename,
       mimetype,
-      fileUrl: fileUrl.substring(0, 50) + '...'
+      hasFileId: !!fileId,
+      fileUrl: fileUrl ? fileUrl.substring(0, 50) + '...' : 'none'
     });
     
-    if (!fileUrl || !token) {
-      throw new Error('Missing fileUrl or token');
+    if (!token) {
+      throw new Error('Missing token');
     }
     
-    // Fetch file from Slack with authentication
-    const response = await fetch(fileUrl, {
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
-    });
+    let response;
+    
+    // Use direct URL method (files.download API endpoint doesn't seem to be available)
+    // The url_private URLs work reliably with Bearer token authentication
+    if (fileUrl) {
+      console.log(`🔗 Using direct URL method for file download...`);
+      response = await fetch(fileUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+    }
+    
+    if (!response) {
+      throw new Error('No download method available (missing both fileId and fileUrl)');
+    }
     
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);

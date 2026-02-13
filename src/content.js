@@ -52,8 +52,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('📦 Batch export request for channel:', message.channelName);
     const { channelId, channelName, oldestTimestamp } = message;
     exportChannelViaAPI(channelId, channelName, oldestTimestamp)
-      .then(result => sendResponse({ success: true, ...result }))
-      .catch(error => sendResponse({ success: false, error: error.message }));
+      .then(result => {
+        console.log(`✅ Batch export completed for ${channelName}:`, {
+          messageCount: result.messageCount,
+          markdownLength: result.markdown?.length,
+          hasMarkdown: !!result.markdown
+        });
+        if (!result.markdown) {
+          console.error('❌ No markdown generated for', channelName);
+        }
+        sendResponse({ success: true, ...result });
+      })
+      .catch(error => {
+        console.error('❌ Batch export error for', channelName, ':', error);
+        sendResponse({ success: false, error: error.message });
+      });
     return true; // async response
   }
 
@@ -828,24 +841,29 @@ async function downloadFiles(files, channelName, token, config) {
 
 /**
  * Download a single file from Slack (via background script to avoid CORS)
- * @param {Object} file - File object with url, name, mimetype
+ * @param {Object} file - File object with id, url, name, mimetype
  * @param {string} filesDir - Directory to save file in
  * @param {string} token - Slack auth token
+ * @param {number} retryCount - Current retry attempt (internal use)
  * @returns {Promise<string>} Local file path relative to download directory
  */
-async function downloadSingleFile(file, filesDir, token) {
+async function downloadSingleFile(file, filesDir, token, retryCount = 0) {
+  const maxRetries = 2;
+  
   try {
     // Sanitize filename
     const sanitizedName = sanitizeFileName(file.name);
     const localPath = `${filesDir}/${sanitizedName}`;
     
-    console.log(`⬇️ Downloading: ${file.name} -> ${localPath}`);
+    console.log(`⬇️ Downloading: ${file.name} -> ${localPath}${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
     
     // Send download request to background script (which can bypass CORS)
+    // Use direct URL method - files.download API endpoint is not available
     const downloadResponse = await chrome.runtime.sendMessage({
       action: 'DOWNLOAD_SLACK_FILE',
       data: {
-        fileUrl: file.url,
+        fileId: null, // Not using API endpoint
+        fileUrl: file.url, // Use direct URL
         filename: localPath,
         mimetype: file.mimetype || 'application/octet-stream',
         token: token
@@ -853,11 +871,27 @@ async function downloadSingleFile(file, filesDir, token) {
     });
     
     if (!downloadResponse || !downloadResponse.success) {
-      throw new Error(downloadResponse?.error || 'Download failed');
+      const error = downloadResponse?.error || 'Download failed';
+      
+      // Retry logic for 401 errors or failed fetches
+      if ((error.includes('401') || error.includes('Failed to fetch')) && retryCount < maxRetries) {
+        console.log(`🔄 Retrying ${file.name} (attempt ${retryCount + 1}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retry
+        return downloadSingleFile(file, filesDir, token, retryCount + 1);
+      }
+      
+      throw new Error(error);
     }
     
     return localPath;
   } catch (error) {
+    // If it's a retryable error and we haven't exhausted retries, try again
+    if ((error.message.includes('401') || error.message.includes('Failed to fetch')) && retryCount < maxRetries) {
+      console.log(`🔄 Retrying download of ${file.name}...`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return downloadSingleFile(file, filesDir, token, retryCount + 1);
+    }
+    
     console.error(`❌ Error downloading file ${file.name}:`, error);
     throw error;
   }
@@ -903,8 +937,20 @@ function sanitizeFileName(filename) {
  * Update file references in messages to use local paths
  * @param {Array<Object>} messages - Array of message objects
  * @param {Object} fileMap - Map of file URLs to local paths
+ * @param {string} baseDirectory - Base directory to strip from paths (e.g., 'slack-exports')
  */
-function updateFileReferencesInMessages(messages, fileMap) {
+function updateFileReferencesInMessages(messages, fileMap, baseDirectory = 'slack-exports') {
+  // Helper function to strip base directory from path
+  const stripBaseDirectory = (path) => {
+    if (!path) return path;
+    // Remove base directory prefix if present
+    const basePrefix = baseDirectory + '/';
+    if (path.startsWith(basePrefix)) {
+      return path.substring(basePrefix.length);
+    }
+    return path;
+  };
+
   for (const message of messages) {
     // Update content using stored messageFiles
     if (message.messageFiles && message.messageFiles.length > 0) {
@@ -913,18 +959,21 @@ function updateFileReferencesInMessages(messages, fileMap) {
       for (const file of message.messageFiles) {
         const fileInfo = fileMap[file.url];
         if (fileInfo && fileInfo.localPath && !fileInfo.error) {
-          // Replace file URL references with local path
+          // Strip base directory from local path for markdown links
+          const relativePath = stripBaseDirectory(fileInfo.localPath);
+          
+          // Replace file URL references with relative path (without base directory)
           const fileUrlPattern = new RegExp(escapeRegex(file.url), 'g');
-          updatedContent = updatedContent.replace(fileUrlPattern, fileInfo.localPath);
+          updatedContent = updatedContent.replace(fileUrlPattern, relativePath);
           
           // Also replace any markdown links that reference this file
           const linkPattern = new RegExp(`\\[([^\\]]+)\\]\\(${escapeRegex(file.url)}\\)`, 'g');
-          updatedContent = updatedContent.replace(linkPattern, `[$1](${fileInfo.localPath})`);
+          updatedContent = updatedContent.replace(linkPattern, `[$1](${relativePath})`);
           
           // For images, update image markdown syntax
           if (file.image) {
             const imagePattern = new RegExp(`!\\[([^\\]]*)\\]\\(${escapeRegex(file.url)}\\)`, 'g');
-            updatedContent = updatedContent.replace(imagePattern, `![$1](${fileInfo.localPath})`);
+            updatedContent = updatedContent.replace(imagePattern, `![$1](${relativePath})`);
           }
         }
       }
@@ -941,8 +990,10 @@ function updateFileReferencesInMessages(messages, fileMap) {
           for (const file of reply.messageFiles) {
             const fileInfo = fileMap[file.url];
             if (fileInfo && fileInfo.localPath && !fileInfo.error) {
+              // Strip base directory from local path for markdown links
+              const relativePath = stripBaseDirectory(fileInfo.localPath);
               const fileUrlPattern = new RegExp(escapeRegex(file.url), 'g');
-              updatedReplyContent = updatedReplyContent.replace(fileUrlPattern, fileInfo.localPath);
+              updatedReplyContent = updatedReplyContent.replace(fileUrlPattern, relativePath);
             }
           }
           
@@ -1125,11 +1176,19 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   // Download files before generating markdown
   const fileMap = await downloadFiles(filesToDownload, channelName, token, config);
   
-  // Update file references in messages to use local paths
-  updateFileReferencesInMessages(messages, fileMap);
+  // Update file references in messages to use local paths (strip base directory)
+  const baseDirectory = config.downloadDirectory || 'slack-exports';
+  updateFileReferencesInMessages(messages, fileMap, baseDirectory);
 
   const markdown = convertToMarkdown(messages, channelName, config);
-  console.log(`✅ Processed ${messages.length} messages for ${channelName}`);
+  
+  // Ensure markdown is always a string
+  if (!markdown || typeof markdown !== 'string') {
+    console.error(`❌ Markdown generation failed for ${channelName} - got:`, typeof markdown, markdown);
+    throw new Error(`Failed to generate markdown for ${channelName}`);
+  }
+  
+  console.log(`✅ Processed ${messages.length} messages for ${channelName} (markdown: ${markdown.length} chars)`);
 
   return { messageCount: messages.length, markdown, channelName };
 }
@@ -1335,11 +1394,11 @@ function collectFilesFromMessage(apiMsg) {
   // Collect files from apiMsg.files array
   if (apiMsg.files && Array.isArray(apiMsg.files)) {
     for (const file of apiMsg.files) {
-      if (file.url_private || file.permalink) {
+      if (file.id || file.url_private || file.permalink) {
         files.push({
-          id: file.id || file.url_private || file.permalink,
+          id: file.id, // Store file ID for API downloads
           name: file.name || file.title || `file-${file.id || Date.now()}`,
-          url: file.url_private || file.permalink,
+          url: file.url_private || file.permalink, // Fallback URL
           mimetype: file.mimetype || 'application/octet-stream',
           size: file.size,
           thumb_64: file.thumb_64,
@@ -1354,11 +1413,11 @@ function collectFilesFromMessage(apiMsg) {
   // Collect files from apiMsg.file (single file share)
   if (apiMsg.file && !apiMsg.files) {
     const file = apiMsg.file;
-    if (file.url_private || file.permalink) {
+    if (file.id || file.url_private || file.permalink) {
       files.push({
-        id: file.id || file.url_private || file.permalink,
+        id: file.id, // Store file ID for API downloads
         name: file.name || file.title || `file-${file.id || Date.now()}`,
-        url: file.url_private || file.permalink,
+        url: file.url_private || file.permalink, // Fallback URL
         mimetype: file.mimetype || 'application/octet-stream',
         size: file.size,
         thumb_64: file.thumb_64,
