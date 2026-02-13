@@ -101,6 +101,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   
+  if (message.action === 'DOWNLOAD_FILE_BLOB') {
+    handleBlobDownload(message.data)
+      .then(() => sendResponse({ success: true }))
+      .catch(error => {
+        console.error('Blob download failed:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+    
+    // Return true to indicate we'll respond asynchronously
+    return true;
+  }
+  
+  if (message.action === 'DOWNLOAD_SLACK_FILE') {
+    handleSlackFileDownload(message.data)
+      .then(() => sendResponse({ success: true }))
+      .catch(error => {
+        console.error('Slack file download failed:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+    
+    // Return true to indicate we'll respond asynchronously
+    return true;
+  }
+  
   if (message.action === 'CONTENT_SCRIPT_READY') {
     console.log('✅ Content script ready on tab:', sender.tab?.id);
     return;
@@ -156,6 +180,118 @@ async function handleFileDownload(data) {
     
   } catch (error) {
     console.error('❌ Failed background download:', error);
+    console.error('Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
+/**
+ * Handle Slack file download (fetches file from Slack and downloads it)
+ * @param {Object} data - Download data containing fileUrl, filename, mimetype, and token
+ * @returns {Promise<void>}
+ */
+async function handleSlackFileDownload(data) {
+  try {
+    console.log('📥 Starting Slack file download...');
+    const { fileUrl, filename, mimetype, token } = data;
+    console.log('Slack file download details:', {
+      filename,
+      mimetype,
+      fileUrl: fileUrl.substring(0, 50) + '...'
+    });
+    
+    if (!fileUrl || !token) {
+      throw new Error('Missing fileUrl or token');
+    }
+    
+    // Fetch file from Slack with authentication
+    const response = await fetch(fileUrl, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    // Get file content as array buffer
+    const arrayBuffer = await response.arrayBuffer();
+    
+    // Convert array buffer to base64
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const base64Data = btoa(binary);
+    
+    // Determine MIME type
+    const contentType = mimetype || response.headers.get('content-type') || 'application/octet-stream';
+    const dataUrl = `data:${contentType};base64,${base64Data}`;
+    
+    // Download via Chrome downloads API
+    const downloadOptions = {
+      url: dataUrl,
+      filename: filename,
+      saveAs: false,
+      conflictAction: 'uniquify'
+    };
+    
+    console.log('📤 Downloading Slack file:', filename);
+    const downloadId = await chrome.downloads.download(downloadOptions);
+    
+    console.log('✅ Slack file download started with ID:', downloadId);
+    
+  } catch (error) {
+    console.error('❌ Failed Slack file download:', error);
+    console.error('Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
+/**
+ * Handle blob file download (for binary files like images, PDFs, etc.)
+ * @param {Object} data - Download data containing filename, dataUrl, and mimeType
+ * @returns {Promise<void>}
+ */
+async function handleBlobDownload(data) {
+  try {
+    console.log('📥 Starting blob file download...');
+    const { filename, dataUrl, mimeType } = data;
+    console.log('Blob download details:', {
+      filename,
+      mimeType,
+      dataUrlLength: dataUrl?.length
+    });
+    
+    if (!dataUrl) {
+      throw new Error('No data URL provided for download');
+    }
+    
+    // Ensure directory path is properly formatted
+    const downloadOptions = {
+      url: dataUrl,
+      filename: filename,
+      saveAs: false,
+      conflictAction: 'uniquify' // Auto-rename if file exists
+    };
+    
+    console.log('📤 Blob download options:', { ...downloadOptions, url: '[data URL]' });
+    const downloadId = await chrome.downloads.download(downloadOptions);
+    
+    console.log('✅ Blob download started with ID:', downloadId);
+    
+  } catch (error) {
+    console.error('❌ Failed blob download:', error);
     console.error('Error details:', {
       name: error.name,
       message: error.message,

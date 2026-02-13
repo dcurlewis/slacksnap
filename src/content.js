@@ -758,6 +758,211 @@ function getCurrentChannelId() {
 }
 
 /**
+ * Download files from Slack and save them locally
+ * @param {Array<Object>} files - Array of file objects to download
+ * @param {string} channelName - Channel name for directory structure
+ * @param {string} token - Slack auth token
+ * @param {Object} config - Configuration object
+ * @returns {Promise<Object>} Map of file URL to local path
+ */
+async function downloadFiles(files, channelName, token, config) {
+  const fileMap = {}; // Maps original URL to local path info
+  const filesDir = `${config.downloadDirectory || 'slack-exports'}/${channelName}_files`;
+  
+  if (files.length === 0) {
+    console.log('📁 No files to download');
+    return fileMap;
+  }
+  
+  console.log(`📥 Downloading ${files.length} files to ${filesDir}/...`);
+  
+  // Remove duplicates based on URL
+  const uniqueFiles = [];
+  const seenUrls = new Set();
+  for (const file of files) {
+    if (!seenUrls.has(file.url)) {
+      seenUrls.add(file.url);
+      uniqueFiles.push(file);
+    }
+  }
+  
+  console.log(`📦 Found ${uniqueFiles.length} unique files to download`);
+  
+  // Download files sequentially with delays to avoid rate limiting
+  // Slack has strict rate limits, so we'll download one at a time with delays
+  for (let i = 0; i < uniqueFiles.length; i++) {
+    const file = uniqueFiles[i];
+    
+    // Add delay between file downloads (except for first file)
+    if (i > 0) {
+      await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay between files
+    }
+    
+    try {
+      const localPath = await downloadSingleFile(file, filesDir, token);
+      if (localPath) {
+        fileMap[file.url] = {
+          localPath: localPath,
+          localName: file.name,
+          file: file
+        };
+        // Also update the file object for later reference
+        file.localPath = localPath;
+        file.localName = file.name;
+      }
+    } catch (error) {
+      console.warn(`⚠️ Failed to download file ${file.name}:`, error);
+      // Keep original URL as fallback
+      fileMap[file.url] = {
+        localPath: file.url, // Fallback to original URL
+        localName: file.name,
+        file: file,
+        error: true
+      };
+    }
+  }
+  
+  console.log(`✅ Downloaded ${Object.keys(fileMap).length} files`);
+  return fileMap;
+}
+
+/**
+ * Download a single file from Slack (via background script to avoid CORS)
+ * @param {Object} file - File object with url, name, mimetype
+ * @param {string} filesDir - Directory to save file in
+ * @param {string} token - Slack auth token
+ * @returns {Promise<string>} Local file path relative to download directory
+ */
+async function downloadSingleFile(file, filesDir, token) {
+  try {
+    // Sanitize filename
+    const sanitizedName = sanitizeFileName(file.name);
+    const localPath = `${filesDir}/${sanitizedName}`;
+    
+    console.log(`⬇️ Downloading: ${file.name} -> ${localPath}`);
+    
+    // Send download request to background script (which can bypass CORS)
+    const downloadResponse = await chrome.runtime.sendMessage({
+      action: 'DOWNLOAD_SLACK_FILE',
+      data: {
+        fileUrl: file.url,
+        filename: localPath,
+        mimetype: file.mimetype || 'application/octet-stream',
+        token: token
+      }
+    });
+    
+    if (!downloadResponse || !downloadResponse.success) {
+      throw new Error(downloadResponse?.error || 'Download failed');
+    }
+    
+    return localPath;
+  } catch (error) {
+    console.error(`❌ Error downloading file ${file.name}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Convert ArrayBuffer to base64 string
+ * @param {ArrayBuffer} buffer - ArrayBuffer to convert
+ * @returns {string} Base64 encoded string
+ */
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Sanitize filename for filesystem
+ * @param {string} filename - Original filename
+ * @returns {string} Sanitized filename
+ */
+function sanitizeFileName(filename) {
+  if (!filename) return `file-${Date.now()}`;
+  
+  // Remove path separators and other dangerous characters
+  let sanitized = filename
+    .replace(/[\/\\\?\*\|"<>:]/g, '_')
+    .replace(/\s+/g, '_')
+    .substring(0, 200); // Limit length
+  
+  // Ensure it has an extension
+  if (!sanitized.includes('.')) {
+    sanitized += '.bin';
+  }
+  
+  return sanitized;
+}
+
+/**
+ * Update file references in messages to use local paths
+ * @param {Array<Object>} messages - Array of message objects
+ * @param {Object} fileMap - Map of file URLs to local paths
+ */
+function updateFileReferencesInMessages(messages, fileMap) {
+  for (const message of messages) {
+    // Update content using stored messageFiles
+    if (message.messageFiles && message.messageFiles.length > 0) {
+      let updatedContent = message.content;
+      
+      for (const file of message.messageFiles) {
+        const fileInfo = fileMap[file.url];
+        if (fileInfo && fileInfo.localPath && !fileInfo.error) {
+          // Replace file URL references with local path
+          const fileUrlPattern = new RegExp(escapeRegex(file.url), 'g');
+          updatedContent = updatedContent.replace(fileUrlPattern, fileInfo.localPath);
+          
+          // Also replace any markdown links that reference this file
+          const linkPattern = new RegExp(`\\[([^\\]]+)\\]\\(${escapeRegex(file.url)}\\)`, 'g');
+          updatedContent = updatedContent.replace(linkPattern, `[$1](${fileInfo.localPath})`);
+          
+          // For images, update image markdown syntax
+          if (file.image) {
+            const imagePattern = new RegExp(`!\\[([^\\]]*)\\]\\(${escapeRegex(file.url)}\\)`, 'g');
+            updatedContent = updatedContent.replace(imagePattern, `![$1](${fileInfo.localPath})`);
+          }
+        }
+      }
+      
+      message.content = updatedContent;
+    }
+    
+    // Update thread replies
+    if (message.threadReplies) {
+      for (const reply of message.threadReplies) {
+        if (reply.messageFiles && reply.messageFiles.length > 0) {
+          let updatedReplyContent = reply.content;
+          
+          for (const file of reply.messageFiles) {
+            const fileInfo = fileMap[file.url];
+            if (fileInfo && fileInfo.localPath && !fileInfo.error) {
+              const fileUrlPattern = new RegExp(escapeRegex(file.url), 'g');
+              updatedReplyContent = updatedReplyContent.replace(fileUrlPattern, fileInfo.localPath);
+            }
+          }
+          
+          reply.content = updatedReplyContent;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Escape special regex characters in a string
+ * @param {string} str - String to escape
+ * @returns {string} Escaped string
+ */
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Export a specific channel via API (parameterized version for batch export)
  * @param {string} channelId - The Slack channel ID to export
  * @param {string} channelName - Human-readable channel name (used in markdown header)
@@ -780,9 +985,13 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     return { messageCount: 0, markdown: '', channelName };
   }
 
-  // Extract unique user IDs from messages
+  // Extract unique user IDs from messages and cache thread replies
   const userIds = new Set();
-  for (const msg of apiMessages) {
+  const threadRepliesCache = new Map(); // Cache thread replies to avoid fetching twice
+  let threadFetchCount = 0;
+  
+  for (let i = 0; i < apiMessages.length; i++) {
+    const msg = apiMessages[i];
     if (msg.user) userIds.add(msg.user);
     const mentionMatches = (msg.text || '').match(/<@([A-Z0-9]+)>/g);
     if (mentionMatches) {
@@ -792,7 +1001,16 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
       });
     }
     if (config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0) {
+      // Add delay between thread reply fetches to avoid rate limiting
+      if (threadFetchCount > 0) {
+        await new Promise(resolve => setTimeout(resolve, 800)); // 800ms delay between thread fetches
+      }
+      threadFetchCount++;
+      
       const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token);
+      // Cache thread replies for later use
+      threadRepliesCache.set(msg.thread_ts, repliesRaw);
+      
       for (const reply of repliesRaw) {
         if (reply.user) userIds.add(reply.user);
         const replyMentions = (reply.text || '').match(/<@([A-Z0-9]+)>/g);
@@ -809,8 +1027,9 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   console.log(`🎯 Need to fetch ${userIds.size} users for ${channelName}`);
   const userMap = await fetchSpecificUsers(Array.from(userIds), token);
 
-  // Enrich messages with usernames and thread replies
+  // Enrich messages with usernames and thread replies, and collect files
   const enrichedMessages = [];
+  const filesToDownload = []; // Track all files that need to be downloaded
   let emptyContentCount = 0;
   for (const apiMsg of apiMessages) {
     // Handle sender extraction - system messages might not have a user field
@@ -824,7 +1043,12 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
       sender = 'System';
     }
     
-    let content = extractMessageContent(apiMsg, userMap);
+    // Collect files from this message
+    const messageFiles = collectFilesFromMessage(apiMsg);
+    filesToDownload.push(...messageFiles);
+    
+    // Store file references in message for later update
+    let content = extractMessageContent(apiMsg, userMap, messageFiles);
     
     // Debug: Log messages with empty content to understand what's being filtered
     if (!content || !content.trim()) {
@@ -855,16 +1079,30 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
 
     const threadReplies = [];
     if (config.includeThreadReplies && apiMsg.thread_ts && apiMsg.reply_count > 0) {
-      const repliesRaw = await fetchThreadReplies(channelId, apiMsg.thread_ts, oldestUnix, token);
+      // Use cached thread replies to avoid fetching twice
+      const repliesRaw = threadRepliesCache.get(apiMsg.thread_ts) || [];
       for (const reply of repliesRaw) {
         if (reply.ts === apiMsg.thread_ts) continue;
         const replySender = userMap[reply.user] || 'Unknown User';
-        let replyContent = extractMessageContent(reply, userMap);
-        threadReplies.push({ sender: replySender, content: replyContent, timestamp: reply.ts });
+        const replyFiles = collectFilesFromMessage(reply);
+        filesToDownload.push(...replyFiles);
+        let replyContent = extractMessageContent(reply, userMap, replyFiles);
+        threadReplies.push({ 
+          sender: replySender, 
+          content: replyContent, 
+          timestamp: reply.ts,
+          messageFiles: replyFiles // Store file references for later update
+        });
       }
     }
 
-    enrichedMessages.push({ sender, content, timestamp: apiMsg.ts, threadReplies });
+    enrichedMessages.push({ 
+      sender, 
+      content, 
+      timestamp: apiMsg.ts, 
+      threadReplies,
+      messageFiles: messageFiles // Store file references for later update
+    });
   }
   
   console.log(`📊 Enrichment complete: ${enrichedMessages.length} total, ${emptyContentCount} with empty content`);
@@ -883,6 +1121,12 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   const messages = enrichedMessages
     .filter(msg => msg.content && msg.content.trim())
     .sort((a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp));
+
+  // Download files before generating markdown
+  const fileMap = await downloadFiles(filesToDownload, channelName, token, config);
+  
+  // Update file references in messages to use local paths
+  updateFileReferencesInMessages(messages, fileMap);
 
   const markdown = convertToMarkdown(messages, channelName, config);
   console.log(`✅ Processed ${messages.length} messages for ${channelName}`);
@@ -1081,12 +1325,96 @@ async function fetchSingleUser(userId, token) {
 }
 
 /**
+ * Collect file attachments from a Slack message
+ * @param {Object} apiMsg - Slack API message object
+ * @returns {Array<Object>} Array of file objects with id, name, url, mimetype, etc.
+ */
+function collectFilesFromMessage(apiMsg) {
+  const files = [];
+  
+  // Collect files from apiMsg.files array
+  if (apiMsg.files && Array.isArray(apiMsg.files)) {
+    for (const file of apiMsg.files) {
+      if (file.url_private || file.permalink) {
+        files.push({
+          id: file.id || file.url_private || file.permalink,
+          name: file.name || file.title || `file-${file.id || Date.now()}`,
+          url: file.url_private || file.permalink,
+          mimetype: file.mimetype || 'application/octet-stream',
+          size: file.size,
+          thumb_64: file.thumb_64,
+          thumb_360: file.thumb_360,
+          image: file.mimetype && file.mimetype.startsWith('image/'),
+          original: file
+        });
+      }
+    }
+  }
+  
+  // Collect files from apiMsg.file (single file share)
+  if (apiMsg.file && !apiMsg.files) {
+    const file = apiMsg.file;
+    if (file.url_private || file.permalink) {
+      files.push({
+        id: file.id || file.url_private || file.permalink,
+        name: file.name || file.title || `file-${file.id || Date.now()}`,
+        url: file.url_private || file.permalink,
+        mimetype: file.mimetype || 'application/octet-stream',
+        size: file.size,
+        thumb_64: file.thumb_64,
+        thumb_360: file.thumb_360,
+        image: file.mimetype && file.mimetype.startsWith('image/'),
+        original: file
+      });
+    }
+  }
+  
+  // Extract images from blocks (embedded/pasted images)
+  if (apiMsg.blocks && Array.isArray(apiMsg.blocks)) {
+    for (const block of apiMsg.blocks) {
+      // Check for image blocks
+      if (block.type === 'image' && block.image_url) {
+        files.push({
+          id: block.image_url,
+          name: block.alt_text || `image-${Date.now()}.png`,
+          url: block.image_url,
+          mimetype: 'image/png', // Default for embedded images
+          image: true,
+          embedded: true,
+          original: block
+        });
+      }
+      
+      // Check for image elements in rich text blocks
+      if (block.elements && Array.isArray(block.elements)) {
+        for (const element of block.elements) {
+          if (element.type === 'image' && element.image_url) {
+            files.push({
+              id: element.image_url,
+              name: element.alt_text || `image-${Date.now()}.png`,
+              url: element.image_url,
+              mimetype: 'image/png',
+              image: true,
+              embedded: true,
+              original: element
+            });
+          }
+        }
+      }
+    }
+  }
+  
+  return files;
+}
+
+/**
  * Extract all content from a Slack message (text, files, blocks, etc.)
  * @param {Object} apiMsg - Slack API message object
  * @param {Object} userMap - Map of user IDs to display names
+ * @param {Array<Object>} messageFiles - Array of file objects collected from this message
  * @returns {string} Combined content string
  */
-function extractMessageContent(apiMsg, userMap) {
+function extractMessageContent(apiMsg, userMap, messageFiles = []) {
   const parts = [];
   
   // Extract main text content - be more permissive, extract if text exists at all
@@ -1111,19 +1439,25 @@ function extractMessageContent(apiMsg, userMap) {
     }
   }
   
-  // Extract file attachments
-  if (apiMsg.files && Array.isArray(apiMsg.files) && apiMsg.files.length > 0) {
+  // Extract file attachments - use URLs initially, will be replaced with local paths after download
+  if (messageFiles && messageFiles.length > 0) {
     const fileParts = [];
-    for (const file of apiMsg.files) {
-      const fileName = file.name || file.title || 'Unnamed file';
-      const fileUrl = file.url_private || file.permalink || '';
-      if (fileUrl) {
-        fileParts.push(`[${fileName}](${fileUrl})`);
+    for (const file of messageFiles) {
+      const fileName = file.name || 'Unnamed file';
+      const filePath = file.url || ''; // Use URL initially, will be replaced later
+      
+      if (file.image) {
+        // For images, embed them in markdown (will be updated to local path)
+        fileParts.push(`![${fileName}](${filePath})`);
+      } else if (filePath) {
+        // For other files, use link (will be updated to local path)
+        fileParts.push(`[${fileName}](${filePath})`);
       } else {
         fileParts.push(fileName);
       }
+      
       // Add file type info if available
-      if (file.mimetype) {
+      if (file.mimetype && !file.image) {
         fileParts[fileParts.length - 1] += ` (${file.mimetype})`;
       }
     }
@@ -1323,16 +1657,19 @@ async function getMessagesViaHistoryAPI(channelId, oldestUnix, token) {
 }
 
 /**
- * Fetch thread replies for a message
+ * Fetch thread replies for a message with retry logic and rate limiting
  * @param {string} channelId - Channel ID
  * @param {string} threadTs - Thread timestamp
  * @param {number} oldestUnix - Oldest timestamp to fetch
  * @param {string} token - Slack auth token
+ * @param {number} retryCount - Current retry attempt (internal use)
  * @returns {Promise<Array>} Array of reply message objects
  */
-async function fetchThreadReplies(channelId, threadTs, oldestUnix, token) {
+async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount = 0) {
+  const maxRetries = 3;
+  
   try {
-    console.log(`🧵 Fetching thread replies for ${threadTs}`);
+    console.log(`🧵 Fetching thread replies for ${threadTs}${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
     
     const params = new URLSearchParams({
       token: token,
@@ -1352,13 +1689,29 @@ async function fetchThreadReplies(channelId, threadTs, oldestUnix, token) {
     });
     
     const data = await response.json();
+    
     if (!data.ok) {
+      // Handle rate limiting with exponential backoff
+      if (data.error === 'ratelimited' && retryCount < maxRetries) {
+        const retryAfter = data.response_metadata?.retry_after || Math.pow(2, retryCount) * 2;
+        console.log(`⏳ Rate limited, waiting ${retryAfter}s before retry ${retryCount + 1}/${maxRetries}...`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1);
+      }
       throw new Error(`conversations.replies API failed: ${data.error}`);
     }
     
     console.log(`✅ Found ${data.messages?.length || 0} thread replies`);
     return data.messages || [];
   } catch (error) {
+    // If it's a rate limit error and we haven't exhausted retries, try again
+    if (error.message.includes('ratelimited') && retryCount < maxRetries) {
+      const waitTime = Math.pow(2, retryCount) * 2;
+      console.log(`⏳ Rate limit error, waiting ${waitTime}s before retry ${retryCount + 1}/${maxRetries}...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+      return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1);
+    }
+    
     console.error('❌ Failed to fetch thread replies:', error);
     return []; // Return empty array on error to avoid breaking the export
   }
