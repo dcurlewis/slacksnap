@@ -149,7 +149,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleFileDownload(data) {
   try {
     console.log('📥 Starting background file download (fallback method)...');
-    const { filename, content, directory } = data;
+    const { filename, content, directory, mimeType = 'text/markdown' } = data;
     console.log('Download details:', {
       filename,
       contentLength: content?.length,
@@ -162,7 +162,7 @@ async function handleFileDownload(data) {
     }
     
     // Convert content to data URL (works in service workers)
-    const dataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(content);
+    const dataUrl = `data:${mimeType};charset=utf-8,` + encodeURIComponent(content);
     console.log('📝 Created data URL');
     
     // Ensure directory path is properly formatted

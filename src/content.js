@@ -238,9 +238,11 @@ async function exportMessages() {
     // Get channel information
     const channelName = window.SlackSnapUtils.extractChannelName();
     const filename = window.SlackSnapUtils.generateFilename(channelName, config);
+    const htmlFilename = getHtmlFilename(filename);
     
     // Convert to markdown
     const markdownContent = convertToMarkdown(messages, channelName, config);
+    const htmlContent = convertToHtml(messages, channelName, config);
     
     // Send to background script for download (supports subdirectories)
     try {
@@ -253,21 +255,31 @@ async function exportMessages() {
           directory: config.downloadDirectory
         }
       });
+
+      const htmlResponse = await chrome.runtime.sendMessage({
+        action: 'DOWNLOAD_FILE',
+        data: {
+          filename: htmlFilename,
+          content: htmlContent,
+          directory: config.downloadDirectory,
+          mimeType: 'text/html'
+        }
+      });
       
-      if (response && response.success) {
-        console.log(`✅ File saved to Downloads/${config.downloadDirectory}/${filename}`);
+      if (response && response.success && htmlResponse && htmlResponse.success) {
+        console.log(`✅ Files saved to Downloads/${config.downloadDirectory}/${filename} and ${htmlFilename}`);
         
         // Show success notification
         if (typeof window.SlackSnapUtils !== 'undefined') {
           window.SlackSnapUtils.showNotification(
-            `Exported ${messages.length} messages to ${config.downloadDirectory}/${filename}`, 
+            `Exported ${messages.length} messages to ${config.downloadDirectory}/${filename} and ${htmlFilename}`,
             'success'
           );
         } else {
-          console.log(`✅ Exported ${messages.length} messages to ${filename}`);
+          console.log(`✅ Exported ${messages.length} messages to ${filename} and ${htmlFilename}`);
         }
       } else {
-        throw new Error('Background download failed');
+        throw new Error('Background download failed for markdown or HTML');
       }
       
     } catch (downloadError) {
@@ -277,25 +289,39 @@ async function exportMessages() {
       console.log('🔄 Trying direct download (will go to Downloads root)...');
       
       try {
-        const blob = new Blob([markdownContent], { type: 'text/markdown' });
-        const url = URL.createObjectURL(blob);
+        const markdownBlob = new Blob([markdownContent], { type: 'text/markdown' });
+        const markdownUrl = URL.createObjectURL(markdownBlob);
+        const htmlBlob = new Blob([htmlContent], { type: 'text/html' });
+        const htmlUrl = URL.createObjectURL(htmlBlob);
+
+        const markdownLink = document.createElement('a');
+        markdownLink.href = markdownUrl;
+        markdownLink.download = filename;
+        markdownLink.style.display = 'none';
+
+        const htmlLink = document.createElement('a');
+        htmlLink.href = htmlUrl;
+        htmlLink.download = htmlFilename;
+        htmlLink.style.display = 'none';
+
+        document.body.appendChild(markdownLink);
+        markdownLink.click();
+        document.body.removeChild(markdownLink);
+
+        document.body.appendChild(htmlLink);
+        htmlLink.click();
+        document.body.removeChild(htmlLink);
         
-        const downloadLink = document.createElement('a');
-        downloadLink.href = url;
-        downloadLink.download = filename;
-        downloadLink.style.display = 'none';
-        
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        document.body.removeChild(downloadLink);
-        
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        setTimeout(() => {
+          URL.revokeObjectURL(markdownUrl);
+          URL.revokeObjectURL(htmlUrl);
+        }, 1000);
         
         console.log('✅ Direct download successful (Downloads root)');
         
         if (typeof window.SlackSnapUtils !== 'undefined') {
           window.SlackSnapUtils.showNotification(
-            `Exported ${messages.length} messages to Downloads/${filename}`, 
+            `Exported ${messages.length} messages to Downloads/${filename} and Downloads/${htmlFilename}`,
             'success'
           );
         }
@@ -643,6 +669,9 @@ function extractTextContent(element) {
 async function saveBatchChannelMarkdown(channelName, markdown) {
   const config = await getConfig();
   const filename = window.SlackSnapUtils.generateFilename(channelName, config);
+  const htmlFilename = getHtmlFilename(filename);
+  const html = convertMarkdownToHtmlDocument(markdown, channelName);
+
   const response = await chrome.runtime.sendMessage({
     action: 'DOWNLOAD_FILE',
     data: {
@@ -656,7 +685,38 @@ async function saveBatchChannelMarkdown(channelName, markdown) {
     return { success: false, error: response?.error || 'DOWNLOAD_FILE failed' };
   }
 
+  const htmlResponse = await chrome.runtime.sendMessage({
+    action: 'DOWNLOAD_FILE',
+    data: {
+      filename: htmlFilename,
+      content: html,
+      directory: config.downloadDirectory || 'slack-exports',
+      mimeType: 'text/html'
+    }
+  });
+
+  if (!htmlResponse || !htmlResponse.success) {
+    return { success: false, error: htmlResponse?.error || 'DOWNLOAD_FILE failed for HTML' };
+  }
+
   return { success: true };
+}
+
+/**
+ * Get HTML export filename from markdown filename.
+ * @param {string} markdownFilename
+ * @returns {string}
+ */
+function getHtmlFilename(markdownFilename) {
+  if (!markdownFilename || typeof markdownFilename !== 'string') {
+    return 'slack-export.html';
+  }
+
+  if (/\.(md|markdown)$/i.test(markdownFilename)) {
+    return markdownFilename.replace(/\.(md|markdown)$/i, '.html');
+  }
+
+  return `${markdownFilename}.html`;
 }
 
 /**
@@ -710,6 +770,219 @@ function convertToMarkdown(messages, channelName, config) {
   }
   
   return markdown;
+}
+
+/**
+ * Convert messages to standalone HTML format.
+ * @param {Array<Object>} messages
+ * @param {string} channelName
+ * @param {Object} config
+ * @returns {string}
+ */
+function convertToHtml(messages, channelName, config) {
+  const markdown = convertToMarkdown(messages, channelName, config);
+  return convertMarkdownToHtmlDocument(markdown, channelName);
+}
+
+/**
+ * Convert markdown text to a simple standalone HTML document.
+ * @param {string} markdown
+ * @param {string} channelName
+ * @returns {string}
+ */
+function convertMarkdownToHtmlDocument(markdown, channelName) {
+  const safeTitle = escapeHtml(channelName || 'SlackSnap Export');
+  const bodyHtml = markdownToBasicHtml(markdown || '');
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SlackSnap Export: ${safeTitle}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 24px; line-height: 1.5; color: #111827; }
+    h1, h2, h3 { margin-top: 1.4em; margin-bottom: 0.5em; }
+    p { margin: 0.6em 0; white-space: pre-wrap; }
+    hr { border: 0; border-top: 1px solid #d1d5db; margin: 1.2em 0; }
+    code { background: #f3f4f6; padding: 0.1em 0.25em; border-radius: 4px; }
+    pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow-x: auto; }
+    blockquote { border-left: 3px solid #d1d5db; margin: 0.8em 0; padding-left: 10px; color: #4b5563; }
+    ul { margin: 0.5em 0 0.8em 1.2em; }
+    img { max-width: 100%; height: auto; border-radius: 6px; }
+  </style>
+</head>
+<body>
+${bodyHtml}
+</body>
+</html>`;
+}
+
+/**
+ * Convert markdown subset used by exports into HTML.
+ * @param {string} markdown
+ * @returns {string}
+ */
+function markdownToBasicHtml(markdown) {
+  const lines = String(markdown).replace(/\r\n/g, '\n').split('\n');
+  const html = [];
+  let inCodeBlock = false;
+  let codeLines = [];
+  let codeFenceMarker = null;
+  let inList = false;
+
+  const closeList = () => {
+    if (inList) {
+      html.push('</ul>');
+      inList = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine || '';
+    const trimmedForFence = line.trim();
+    const openFenceMatch = trimmedForFence.match(/^(```|~~~)\s*[A-Za-z0-9_-]*\s*$/);
+    const closeFenceMatch = codeFenceMarker
+      ? trimmedForFence.match(new RegExp(`^${codeFenceMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`))
+      : null;
+
+    if (!inCodeBlock && openFenceMatch) {
+      if (!inCodeBlock) {
+        closeList();
+        inCodeBlock = true;
+        codeLines = [];
+        codeFenceMarker = openFenceMatch[1];
+      }
+      continue;
+    }
+
+    if (inCodeBlock && closeFenceMatch) {
+      html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+      inCodeBlock = false;
+      codeFenceMarker = null;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeLines.push(line);
+      continue;
+    }
+
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      closeList();
+      continue;
+    }
+
+    if (trimmed === '---') {
+      closeList();
+      html.push('<hr>');
+      continue;
+    }
+
+    if (trimmed.startsWith('# ')) {
+      closeList();
+      html.push(`<h1>${inlineMarkdownToHtml(trimmed.slice(2))}</h1>`);
+      continue;
+    }
+
+    if (trimmed.startsWith('## ')) {
+      closeList();
+      html.push(`<h2>${inlineMarkdownToHtml(trimmed.slice(3))}</h2>`);
+      continue;
+    }
+
+    if (trimmed.startsWith('### ')) {
+      closeList();
+      html.push(`<h3>${inlineMarkdownToHtml(trimmed.slice(4))}</h3>`);
+      continue;
+    }
+
+    if (trimmed.startsWith('> ')) {
+      closeList();
+      html.push(`<blockquote>${inlineMarkdownToHtml(trimmed.slice(2))}</blockquote>`);
+      continue;
+    }
+
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('• ')) {
+      if (!inList) {
+        html.push('<ul>');
+        inList = true;
+      }
+      const itemText = trimmed.slice(2);
+      html.push(`<li>${inlineMarkdownToHtml(itemText)}</li>`);
+      continue;
+    }
+
+    closeList();
+    html.push(`<p>${inlineMarkdownToHtml(trimmed)}</p>`);
+  }
+
+  if (inCodeBlock) {
+    html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+  }
+  closeList();
+
+  return html.join('\n');
+}
+
+/**
+ * Convert simple inline markdown markers to HTML.
+ * @param {string} text
+ * @returns {string}
+ */
+function inlineMarkdownToHtml(text) {
+  let safe = escapeHtml(text || '');
+  safe = safe.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (match, alt, href) => {
+    const normalizedHref = normalizeHref(href);
+    if (!normalizedHref) {
+      return match;
+    }
+    return `<img src="${normalizedHref}" alt="${alt}" loading="lazy">`;
+  });
+  safe = safe.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label, href) => {
+    const normalizedHref = normalizeHref(href);
+    if (!normalizedHref) {
+      return label;
+    }
+    return `<a href="${normalizedHref}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+  });
+  safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  safe = safe.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  safe = safe.replace(/`(.+?)`/g, '<code>$1</code>');
+  return safe;
+}
+
+/**
+ * Allow safe link targets for exported HTML links and images.
+ * @param {string} href
+ * @returns {string}
+ */
+function normalizeHref(href) {
+  const value = String(href || '').trim();
+  if (!value) return '';
+
+  // Allow web/mail links and relative file paths generated by exports.
+  const isAllowed =
+    /^(https?:\/\/|mailto:|#|\/|\.\.?\/)/i.test(value) ||
+    /^[A-Za-z0-9._-]+\/[A-Za-z0-9._%\-\/]+$/.test(value);
+
+  return isAllowed ? value : '';
+}
+
+/**
+ * Escape HTML special characters.
+ * @param {string} text
+ * @returns {string}
+ */
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
@@ -1310,16 +1583,33 @@ async function exportMessagesViaAPI() {
     }
 
     const filename = window.SlackSnapUtils.generateFilename(channelName, config);
+    const htmlFilename = getHtmlFilename(filename);
+    const htmlContent = convertMarkdownToHtmlDocument(result.markdown, channelName);
 
     chrome.runtime.sendMessage({
       action: 'DOWNLOAD_FILE',
       data: { filename, content: result.markdown, directory: config.downloadDirectory }
     }, (res) => {
-      if (res && res.success) {
-        window.SlackSnapUtils.showNotification(`✅ Exported ${result.messageCount} messages to ${filename}`, 'success');
-      } else {
-        window.SlackSnapUtils.showNotification(`❌ Download failed: ${res?.error || 'Unknown error'}`, 'error');
+      if (!res || !res.success) {
+        window.SlackSnapUtils.showNotification(`❌ Markdown download failed: ${res?.error || 'Unknown error'}`, 'error');
+        return;
       }
+
+      chrome.runtime.sendMessage({
+        action: 'DOWNLOAD_FILE',
+        data: {
+          filename: htmlFilename,
+          content: htmlContent,
+          directory: config.downloadDirectory,
+          mimeType: 'text/html'
+        }
+      }, (htmlRes) => {
+        if (htmlRes && htmlRes.success) {
+          window.SlackSnapUtils.showNotification(`✅ Exported ${result.messageCount} messages to ${filename} and ${htmlFilename}`, 'success');
+        } else {
+          window.SlackSnapUtils.showNotification(`❌ HTML download failed: ${htmlRes?.error || 'Unknown error'}`, 'error');
+        }
+      });
     });
 
   } catch (error) {
