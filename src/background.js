@@ -203,38 +203,163 @@ async function handleSlackFileDownload(data) {
       filename,
       mimetype,
       hasFileId: !!fileId,
-      fileUrl: fileUrl ? fileUrl.substring(0, 50) + '...' : 'none'
+      fileUrl: fileUrl ? fileUrl.substring(0, 100) + '...' : 'none'
     });
     
     if (!token) {
       throw new Error('Missing token');
     }
     
+    let actualFileUrl = fileUrl;
+    
+    // For PDFs, try to get a fresh URL from Slack API first (PDF URLs may expire faster)
+    const isPdf = mimetype && mimetype.toLowerCase() === 'application/pdf';
+    
+    if (isPdf && fileId) {
+      console.log(`📄 PDF detected, attempting to get fresh URL from API for file ID: ${fileId}...`);
+      try {
+        const infoResponse = await fetch(`https://slack.com/api/files.info?file=${fileId}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
+        
+        if (infoResponse.ok) {
+          const infoData = await infoResponse.json();
+          if (infoData.ok && infoData.file && infoData.file.url_private) {
+            actualFileUrl = infoData.file.url_private;
+            console.log(`✅ Got fresh PDF URL from API`);
+          } else {
+            console.warn(`⚠️ API response not OK or missing URL:`, infoData);
+          }
+        } else {
+          console.warn(`⚠️ API request failed: ${infoResponse.status}`);
+        }
+      } catch (apiError) {
+        console.warn('⚠️ Failed to get file info from API, using original URL:', apiError.message);
+      }
+    }
+    
+    // If we have a file ID but no URL, try to get it from Slack API
+    if (fileId && !actualFileUrl) {
+      console.log(`🔄 No URL provided, fetching file info from API for file ID: ${fileId}...`);
+      try {
+        const infoResponse = await fetch(`https://slack.com/api/files.info?file=${fileId}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
+        
+        if (infoResponse.ok) {
+          const infoData = await infoResponse.json();
+          if (infoData.ok && infoData.file && infoData.file.url_private) {
+            actualFileUrl = infoData.file.url_private;
+            console.log(`✅ Got fresh URL from API`);
+          }
+        }
+      } catch (apiError) {
+        console.warn('⚠️ Failed to get file info from API:', apiError.message);
+      }
+    }
+    
+    if (!actualFileUrl) {
+      throw new Error('No file URL available');
+    }
+    
     let response;
     
     // Use direct URL method (files.download API endpoint doesn't seem to be available)
     // The url_private URLs work reliably with Bearer token authentication
-    if (fileUrl) {
-      console.log(`🔗 Using direct URL method for file download...`);
-      response = await fetch(fileUrl, {
+    try {
+      console.log(`🔗 Fetching file from URL: ${actualFileUrl.substring(0, 100)}...`);
+      response = await fetch(actualFileUrl, {
+        method: 'GET',
         headers: {
-          'Authorization': `Bearer ${token}`
-        }
+          'Authorization': `Bearer ${token}`,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': '*/*'
+        },
+        redirect: 'follow' // Follow redirects
       });
-    }
-    
-    if (!response) {
-      throw new Error('No download method available (missing both fileId and fileUrl)');
+      console.log(`✅ Fetch response status: ${response.status} ${response.statusText}`);
+    } catch (fetchError) {
+      // If fetch fails and we have a file ID, try to get a fresh URL and retry
+      if (fileId && actualFileUrl === fileUrl) {
+        console.log(`🔄 Fetch failed, trying to get fresh URL from API for file ID: ${fileId}...`);
+        try {
+          const infoResponse = await fetch(`https://slack.com/api/files.info?file=${fileId}`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          });
+          
+          if (infoResponse.ok) {
+            const infoData = await infoResponse.json();
+            if (infoData.ok && infoData.file && infoData.file.url_private) {
+              const freshUrl = infoData.file.url_private;
+              console.log(`✅ Got fresh URL from API, retrying fetch...`);
+              
+              // Retry with fresh URL
+              response = await fetch(freshUrl, {
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Accept': '*/*'
+                },
+                redirect: 'follow'
+              });
+              console.log(`✅ Retry fetch response status: ${response.status} ${response.statusText}`);
+            } else {
+              throw fetchError; // Re-throw original error if API call didn't help
+            }
+          } else {
+            throw fetchError; // Re-throw original error if API call failed
+          }
+        } catch (apiError) {
+          console.error('❌ Failed to refresh URL via API:', apiError.message);
+          throw fetchError; // Re-throw original fetch error
+        }
+      } else {
+        console.error('❌ Fetch error details:', {
+          name: fetchError.name,
+          message: fetchError.message,
+          stack: fetchError.stack,
+          fileUrl: actualFileUrl.substring(0, 100)
+        });
+        throw new Error(`Failed to fetch: ${fetchError.message}`);
+      }
     }
     
     if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      console.error(`❌ HTTP error ${response.status}:`, errorText.substring(0, 200));
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
     
     // Get file content as array buffer
+    console.log(`📦 Reading file content (${response.headers.get('content-length') || 'unknown'} bytes)...`);
     const arrayBuffer = await response.arrayBuffer();
+    const fileSize = arrayBuffer.byteLength;
+    console.log(`✅ Read ${fileSize} bytes`);
     
-    // Convert array buffer to base64
+    // Chrome has limits on data URL size (typically 2MB)
+    // For larger files, we need to chunk the base64 conversion or use a different method
+    const MAX_DATA_URL_SIZE = 2 * 1024 * 1024; // 2MB
+    
+    if (fileSize > MAX_DATA_URL_SIZE) {
+      console.log(`⚠️ File is large (${fileSize} bytes), may exceed data URL limit`);
+      console.log(`📦 Attempting base64 conversion anyway (Chrome may handle it)...`);
+    }
+    
+    // For smaller files, use data URL method
+    console.log(`📦 Converting to base64 (file size: ${fileSize} bytes)...`);
     const bytes = new Uint8Array(arrayBuffer);
     let binary = '';
     for (let i = 0; i < bytes.byteLength; i++) {
@@ -264,9 +389,19 @@ async function handleSlackFileDownload(data) {
     console.error('Error details:', {
       name: error.name,
       message: error.message,
-      stack: error.stack
+      stack: error.stack,
+      filename: data.filename,
+      mimetype: data.mimetype,
+      fileUrl: data.fileUrl ? data.fileUrl.substring(0, 100) : 'none'
     });
-    throw error;
+    
+    // Provide more detailed error message
+    let errorMessage = error.message;
+    if (error.message.includes('Failed to fetch')) {
+      errorMessage = `Failed to fetch file: ${error.message}. This may be due to network issues, expired URLs, or CORS restrictions.`;
+    }
+    
+    throw new Error(errorMessage);
   }
 }
 

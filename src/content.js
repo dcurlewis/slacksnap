@@ -858,11 +858,11 @@ async function downloadSingleFile(file, filesDir, token, retryCount = 0) {
     console.log(`⬇️ Downloading: ${file.name} -> ${localPath}${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
     
     // Send download request to background script (which can bypass CORS)
-    // Use direct URL method - files.download API endpoint is not available
+    // Include file ID for fallback URL refresh if direct URL fails
     const downloadResponse = await chrome.runtime.sendMessage({
       action: 'DOWNLOAD_SLACK_FILE',
       data: {
-        fileId: null, // Not using API endpoint
+        fileId: file.id || null, // Include file ID for fallback URL refresh
         fileUrl: file.url, // Use direct URL
         filename: localPath,
         mimetype: file.mimetype || 'application/octet-stream',
