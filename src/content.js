@@ -583,7 +583,9 @@ function convertToMarkdown(messages, channelName, config) {
       markdown += `**${window.SlackSnapUtils.escapeMarkdown(message.sender)}**`;
       
       if (config.includeTimestamps && message.timestamp) {
+        console.log('🔍 Formatting timestamp:', message.timestamp, typeof message.timestamp);
         const formattedTime = formatTimestamp(message.timestamp);
+        console.log('✅ Formatted result:', formattedTime);
         markdown += ` (${formattedTime})`;
       }
       
@@ -620,79 +622,72 @@ function convertToMarkdown(messages, channelName, config) {
  */
 function formatTimestamp(timestamp) {
   try {
-    // Lightweight parsing without verbose per-timestamp logs
+    console.log('📅 formatTimestamp called with:', timestamp, 'type:', typeof timestamp);
+    
+    // Check if this is already a formatted string like "Wednesday 11:47 AM" or "Yesterday 05:00 AM"
+    const timestampStr = String(timestamp);
+    const hasRelativeDay = /(Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/i.test(timestampStr);
+    if (hasRelativeDay) {
+      console.error('❌ ERROR: Received pre-formatted timestamp string:', timestamp);
+      console.error('❌ This should not happen - timestamps should be Unix timestamps from API');
+      // We can't convert this back to a date, so return as-is for now
+      return timestamp;
+    }
     
     let date = null;
     
     // Handle API timestamps (ISO format from our conversion)
     if (timestamp && typeof timestamp === 'string' && timestamp.includes('T')) {
       date = new Date(timestamp);
+      console.log('📅 Parsed as ISO:', date);
     }
-    // Handle raw Unix timestamps from API (like "1753160757.123400")
-    else if (timestamp && /^\d{10}(\.\d{6})?$/.test(timestamp)) {
+    // Handle raw Unix timestamps from API (like "1753160757.123400" or "1753160757")
+    // Also handle numeric timestamps
+    else if (timestamp && (typeof timestamp === 'number' || /^\d{10}(\.\d+)?$/.test(String(timestamp)))) {
       const unixTimestamp = parseFloat(timestamp) * 1000; // Convert to milliseconds
       date = new Date(unixTimestamp);
+      console.log('📅 Parsed as Unix timestamp:', timestamp, '->', date);
     }
     // Try parsing Slack's permalink timestamp formats
-    else if (timestamp && timestamp.includes('p17')) {
-      const match = timestamp.match(/p(\d{10})\d*/);
+    else if (timestamp && String(timestamp).includes('p')) {
+      const match = String(timestamp).match(/p(\d{10})\d*/);
       if (match) {
         const unixTimestamp = parseInt(match[1]) * 1000;
         date = new Date(unixTimestamp);
       }
     }
     // Try parsing as regular timestamp
-    else if (!date || isNaN(date.getTime())) {
+    if (!date || isNaN(date.getTime())) {
       date = new Date(timestamp);
     }
     
-    // Try parsing various formats if still failing
+    // If still can't parse, return error
     if (!date || isNaN(date.getTime())) {
-      // For time-only formats like "5:05 PM", we can't assume the date
-      // Just return the original timestamp since we don't know when it was sent
-      const timeMatch = timestamp.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-      if (timeMatch) {
-        console.log('⚠️ Found time-only format without date context:', timestamp);
-        return timestamp; // Return as-is since we can't determine the actual date
-      }
-    }
-    
-    if (!date || isNaN(date.getTime())) {
-      console.warn('⚠️ Could not parse timestamp:', timestamp);
+      console.error('❌ Could not parse timestamp:', timestamp, typeof timestamp);
       return timestamp; // Return original if parsing fails
     }
     
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const messageDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    // Always show full date with year - use explicit formatting to avoid locale issues
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = months[date.getMonth()];
+    const day = date.getDate();
+    const year = date.getFullYear();
     
-    // Calculate days difference
-    const diffTime = today.getTime() - messageDate.getTime();
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    let hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12; // the hour '0' should be '12'
+    const minutesStr = minutes < 10 ? '0' + minutes : minutes;
     
-    let dateStr = '';
-    if (diffDays === 0) {
-      dateStr = 'Today';
-    } else if (diffDays === 1) {
-      dateStr = 'Yesterday';
-    } else if (diffDays < 7) {
-      dateStr = date.toLocaleDateString([], { weekday: 'long' });
-    } else {
-      dateStr = date.toLocaleDateString([], { 
-        month: 'short', 
-        day: 'numeric',
-        year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
-      });
-    }
+    const dateStr = `${month} ${day}, ${year}`;
+    const timeStr = `${hours}:${minutesStr} ${ampm}`;
     
-    const timeStr = date.toLocaleTimeString([], { 
-      hour: '2-digit', 
-      minute: '2-digit',
-      hour12: true
-    });
+    console.log('📅 Formatted date:', dateStr, timeStr);
     
     return `${dateStr} ${timeStr}`;
   } catch (error) {
+    console.error('Error formatting timestamp:', timestamp, error);
     return timestamp;
   }
 }
@@ -816,10 +811,47 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
 
   // Enrich messages with usernames and thread replies
   const enrichedMessages = [];
+  let emptyContentCount = 0;
   for (const apiMsg of apiMessages) {
-    const sender = userMap[apiMsg.user] || 'Unknown User';
-    let content = window.SlackSnapUtils.cleanText(apiMsg.text || '');
-    content = content.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+    // Handle sender extraction - system messages might not have a user field
+    let sender = 'Unknown User';
+    if (apiMsg.user) {
+      sender = userMap[apiMsg.user] || 'Unknown User';
+    } else if (apiMsg.subtype === 'bot_message' && apiMsg.bot_id) {
+      sender = apiMsg.username || 'Bot';
+    } else if (apiMsg.subtype) {
+      // System messages - use a descriptive label
+      sender = 'System';
+    }
+    
+    let content = extractMessageContent(apiMsg, userMap);
+    
+    // Debug: Log messages with empty content to understand what's being filtered
+    if (!content || !content.trim()) {
+      emptyContentCount++;
+      if (emptyContentCount <= 10) { // Log first 10 empty messages
+        console.log(`🔍 Empty content for message:`, {
+          ts: apiMsg.ts,
+          user: apiMsg.user,
+          subtype: apiMsg.subtype,
+          hasText: !!apiMsg.text,
+          textValue: apiMsg.text, // Show actual value, not just boolean
+          textLength: apiMsg.text ? apiMsg.text.length : 0,
+          textPreview: apiMsg.text ? apiMsg.text.substring(0, 100) : 'none',
+          hasFiles: !!(apiMsg.files && apiMsg.files.length > 0),
+          fileCount: apiMsg.files ? apiMsg.files.length : 0,
+          hasBlocks: !!(apiMsg.blocks && apiMsg.blocks.length > 0),
+          blockCount: apiMsg.blocks ? apiMsg.blocks.length : 0,
+          sender: sender,
+          extractedContent: content,
+          extractedContentLength: content ? content.length : 0
+        });
+        // Also log the full message for first few to see structure
+        if (emptyContentCount <= 3) {
+          console.log(`📋 Full message object (first ${emptyContentCount}):`, JSON.stringify(apiMsg, null, 2));
+        }
+      }
+    }
 
     const threadReplies = [];
     if (config.includeThreadReplies && apiMsg.thread_ts && apiMsg.reply_count > 0) {
@@ -827,15 +859,27 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
       for (const reply of repliesRaw) {
         if (reply.ts === apiMsg.thread_ts) continue;
         const replySender = userMap[reply.user] || 'Unknown User';
-        let replyContent = window.SlackSnapUtils.cleanText(reply.text || '');
-        replyContent = replyContent.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+        let replyContent = extractMessageContent(reply, userMap);
         threadReplies.push({ sender: replySender, content: replyContent, timestamp: reply.ts });
       }
     }
 
     enrichedMessages.push({ sender, content, timestamp: apiMsg.ts, threadReplies });
   }
+  
+  console.log(`📊 Enrichment complete: ${enrichedMessages.length} total, ${emptyContentCount} with empty content`);
 
+  // Debug: Log messages that will be filtered out
+  const filteredOut = enrichedMessages.filter(msg => !msg.content || !msg.content.trim());
+  if (filteredOut.length > 0) {
+    console.log(`⚠️ Filtering out ${filteredOut.length} messages without content`);
+    // Log sample of filtered messages for debugging
+    const sample = filteredOut.slice(0, 5);
+    sample.forEach((msg, i) => {
+      console.log(`  Filtered ${i + 1}: sender="${msg.sender}", timestamp="${msg.timestamp}", content="${msg.content}"`);
+    });
+  }
+  
   const messages = enrichedMessages
     .filter(msg => msg.content && msg.content.trim())
     .sort((a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp));
@@ -1037,6 +1081,150 @@ async function fetchSingleUser(userId, token) {
 }
 
 /**
+ * Extract all content from a Slack message (text, files, blocks, etc.)
+ * @param {Object} apiMsg - Slack API message object
+ * @param {Object} userMap - Map of user IDs to display names
+ * @returns {string} Combined content string
+ */
+function extractMessageContent(apiMsg, userMap) {
+  const parts = [];
+  
+  // Extract main text content - be more permissive, extract if text exists at all
+  // Slack API can return text as string, null, or undefined
+  if (apiMsg.text !== undefined && apiMsg.text !== null && apiMsg.text !== '') {
+    try {
+      let text = String(apiMsg.text);
+      // Clean the text
+      text = window.SlackSnapUtils.cleanText(text);
+      // Replace user mentions
+      text = text.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+      // Include text if it has any content after cleaning
+      if (text && text.length > 0) {
+        parts.push(text);
+      }
+    } catch (error) {
+      console.warn('⚠️ Error extracting text content:', error, 'for message:', apiMsg.ts);
+      // If cleaning fails, try to use raw text
+      if (apiMsg.text && String(apiMsg.text).trim().length > 0) {
+        parts.push(String(apiMsg.text));
+      }
+    }
+  }
+  
+  // Extract file attachments
+  if (apiMsg.files && Array.isArray(apiMsg.files) && apiMsg.files.length > 0) {
+    const fileParts = [];
+    for (const file of apiMsg.files) {
+      const fileName = file.name || file.title || 'Unnamed file';
+      const fileUrl = file.url_private || file.permalink || '';
+      if (fileUrl) {
+        fileParts.push(`[${fileName}](${fileUrl})`);
+      } else {
+        fileParts.push(fileName);
+      }
+      // Add file type info if available
+      if (file.mimetype) {
+        fileParts[fileParts.length - 1] += ` (${file.mimetype})`;
+      }
+    }
+    if (fileParts.length > 0) {
+      parts.push(`📎 Files: ${fileParts.join(', ')}`);
+    }
+  }
+  
+  // Extract blocks content (rich text blocks)
+  if (apiMsg.blocks && Array.isArray(apiMsg.blocks)) {
+    for (const block of apiMsg.blocks) {
+      if (block.type === 'rich_text' && block.elements) {
+        const blockText = extractBlockText(block.elements, userMap);
+        if (blockText.trim()) {
+          parts.push(blockText);
+        }
+      } else if (block.text && block.text.text) {
+        let blockText = window.SlackSnapUtils.cleanText(block.text.text);
+        blockText = blockText.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+        if (blockText.trim()) {
+          parts.push(blockText);
+        }
+      }
+    }
+  }
+  
+  // Handle system messages and subtypes
+  if (apiMsg.subtype) {
+    if (apiMsg.subtype === 'file_share' && apiMsg.file) {
+      const fileName = apiMsg.file.name || apiMsg.file.title || 'Unnamed file';
+      parts.push(`📎 Shared file: ${fileName}`);
+    } else if (apiMsg.subtype === 'channel_join') {
+      parts.push('joined the channel');
+    } else if (apiMsg.subtype === 'channel_leave') {
+      parts.push('left the channel');
+    } else if (apiMsg.subtype === 'channel_topic') {
+      parts.push(`📌 Topic: ${apiMsg.topic || ''}`);
+    } else if (apiMsg.subtype === 'channel_purpose') {
+      parts.push(`📌 Purpose: ${apiMsg.purpose || ''}`);
+    } else if (apiMsg.subtype === 'pinned_item') {
+      parts.push('📌 Pinned a message');
+    } else if (apiMsg.subtype === 'file_comment') {
+      parts.push(`💬 Comment on file: ${apiMsg.comment?.comment || ''}`);
+    }
+  }
+  
+  // If no content found but message exists, indicate it's a message without visible content
+  if (parts.length === 0) {
+    // Check if it's a deleted message
+    if (apiMsg.subtype === 'message_deleted') {
+      return '[Message deleted]';
+    }
+    // For other cases, return empty string (will be filtered out)
+    return '';
+  }
+  
+  return parts.join('\n\n');
+}
+
+/**
+ * Extract text from Slack block elements recursively
+ * @param {Array} elements - Block elements array
+ * @param {Object} userMap - Map of user IDs to display names
+ * @returns {string} Extracted text
+ */
+function extractBlockText(elements, userMap) {
+  if (!Array.isArray(elements)) return '';
+  
+  const parts = [];
+  for (const element of elements) {
+    if (element.type === 'text' && element.text) {
+      let text = window.SlackSnapUtils.cleanText(element.text);
+      text = text.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+      parts.push(text);
+    } else if (element.type === 'rich_text_section' && element.elements) {
+      parts.push(extractBlockText(element.elements, userMap));
+    } else if (element.type === 'rich_text_list' && element.elements) {
+      for (const item of element.elements) {
+        if (item.elements) {
+          parts.push(`• ${extractBlockText(item.elements, userMap)}`);
+        }
+      }
+    } else if (element.type === 'rich_text_quote' && element.elements) {
+      parts.push(`> ${extractBlockText(element.elements, userMap)}`);
+    } else if (element.type === 'rich_text_preformatted' && element.elements) {
+      const code = extractBlockText(element.elements, userMap);
+      parts.push(`\`\`\`\n${code}\n\`\`\``);
+    } else if (element.type === 'link' && element.url) {
+      const linkText = element.text || element.url;
+      parts.push(`[${linkText}](${element.url})`);
+    } else if (element.text) {
+      let text = window.SlackSnapUtils.cleanText(element.text);
+      text = text.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+      parts.push(text);
+    }
+  }
+  
+  return parts.join('');
+}
+
+/**
  * Fetch messages from a channel using conversations.history API
  * @param {string} channelId - Channel ID
  * @param {number} oldestUnix - Oldest timestamp to fetch (Unix timestamp)
@@ -1176,7 +1364,7 @@ async function fetchThreadReplies(channelId, threadTs, oldestUnix, token) {
   }
 }
 
-console.log('🚀 SlackSnap content script loaded');
+console.log('🚀 SlackSnap content script loaded - VERSION 2.0 (with full timestamp fix)');
 console.log('📍 Current page:', window.location.href);
 console.log('📄 Page title:', document.title);
 
