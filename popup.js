@@ -243,11 +243,16 @@ async function exportSelected() {
     setChannelStatus(channel.channelId, 'active');
 
     try {
+      // Calculate oldestTimestamp based on historyDays from now
+      // Always respect historyDays by going back from current time
+      const historyDaysMs = (config.historyDays || 7) * 86400 * 1000;
+      const oldestTimestamp = Date.now() - historyDaysMs;
+
       const response = await chrome.tabs.sendMessage(activeTab.id, {
         action: 'BATCH_EXPORT_CHANNEL',
         channelId: channel.channelId,
         channelName: channel.name,
-        oldestTimestamp: lastExportTimestamps[channel.channelId] || null
+        oldestTimestamp: oldestTimestamp
       });
 
       if (response && response.success) {
