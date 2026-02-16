@@ -772,6 +772,8 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   // Extract unique user IDs from messages and cache thread replies
   const userIds = new Set();
   const threadRepliesCache = new Map();
+  let threadFetchCount = 0;
+  
   for (const msg of apiMessages) {
     if (msg.user) userIds.add(msg.user);
     const mentionMatches = (msg.text || '').match(/<@([A-Z0-9]+)>/g);
@@ -782,6 +784,12 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
       });
     }
     if (config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0) {
+      // Add delay between thread reply fetches to avoid rate limiting
+      if (threadFetchCount > 0) {
+        await new Promise(resolve => setTimeout(resolve, 800)); // 800ms delay between thread fetches
+      }
+      threadFetchCount++;
+      
       const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token);
       threadRepliesCache.set(msg.thread_ts, repliesRaw);
       for (const reply of repliesRaw) {
@@ -1121,16 +1129,19 @@ async function getMessagesViaHistoryAPI(channelId, oldestUnix, token) {
 }
 
 /**
- * Fetch thread replies for a message
+ * Fetch thread replies for a message with retry logic and rate limiting
  * @param {string} channelId - Channel ID
  * @param {string} threadTs - Thread timestamp
  * @param {number} oldestUnix - Oldest timestamp to fetch
  * @param {string} token - Slack auth token
+ * @param {number} retryCount - Current retry attempt (internal use)
  * @returns {Promise<Array>} Array of reply message objects
  */
-async function fetchThreadReplies(channelId, threadTs, oldestUnix, token) {
+async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount = 0) {
+  const maxRetries = 3;
+  
   try {
-    console.log(`🧵 Fetching thread replies for ${threadTs}`);
+    console.log(`🧵 Fetching thread replies for ${threadTs}${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
     
     const params = new URLSearchParams({
       token: token,
@@ -1150,13 +1161,29 @@ async function fetchThreadReplies(channelId, threadTs, oldestUnix, token) {
     });
     
     const data = await response.json();
+    
     if (!data.ok) {
+      // Handle rate limiting with exponential backoff
+      if (data.error === 'ratelimited' && retryCount < maxRetries) {
+        const retryAfter = data.response_metadata?.retry_after || Math.pow(2, retryCount) * 2;
+        console.log(`⏳ Rate limited, waiting ${retryAfter}s before retry ${retryCount + 1}/${maxRetries}...`);
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1);
+      }
       throw new Error(`conversations.replies API failed: ${data.error}`);
     }
     
     console.log(`✅ Found ${data.messages?.length || 0} thread replies`);
     return data.messages || [];
   } catch (error) {
+    // If it's a rate limit error and we haven't exhausted retries, try again
+    if (error.message.includes('ratelimited') && retryCount < maxRetries) {
+      const waitTime = Math.pow(2, retryCount) * 2;
+      console.log(`⏳ Rate limit error, waiting ${waitTime}s before retry ${retryCount + 1}/${maxRetries}...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+      return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1);
+    }
+    
     console.error('❌ Failed to fetch thread replies:', error);
     return []; // Return empty array on error to avoid breaking the export
   }
