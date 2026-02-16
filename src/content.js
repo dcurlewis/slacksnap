@@ -769,8 +769,9 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     return { messageCount: 0, markdown: '', channelName };
   }
 
-  // Extract unique user IDs from messages
+  // Extract unique user IDs from messages and cache thread replies
   const userIds = new Set();
+  const threadRepliesCache = new Map();
   for (const msg of apiMessages) {
     if (msg.user) userIds.add(msg.user);
     const mentionMatches = (msg.text || '').match(/<@([A-Z0-9]+)>/g);
@@ -782,6 +783,7 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     }
     if (config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0) {
       const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token);
+      threadRepliesCache.set(msg.thread_ts, repliesRaw);
       for (const reply of repliesRaw) {
         if (reply.user) userIds.add(reply.user);
         const replyMentions = (reply.text || '').match(/<@([A-Z0-9]+)>/g);
@@ -807,7 +809,7 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
 
     const threadReplies = [];
     if (config.includeThreadReplies && apiMsg.thread_ts && apiMsg.reply_count > 0) {
-      const repliesRaw = await fetchThreadReplies(channelId, apiMsg.thread_ts, oldestUnix, token);
+      const repliesRaw = threadRepliesCache.get(apiMsg.thread_ts) || [];
       for (const reply of repliesRaw) {
         if (reply.ts === apiMsg.thread_ts) continue;
         const replySender = userMap[reply.user] || 'Unknown User';
