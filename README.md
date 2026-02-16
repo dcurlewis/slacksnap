@@ -35,13 +35,17 @@ The extension needs permissions for Slack domains, local storage (for your setti
 
 ## How to use it
 
-1. Open Slack in your browser
-2. Navigate to the channel you want to export
-3. Click the SlackSnap icon
-4. Wait a few seconds (usually 5-15 depending on message volume)
-5. Find your markdown file in `Downloads/slack-exports/` by default
+### Batch export (the main workflow)
 
-That's it. No complicated setup, no account creation, no sending your data to random servers. Now you can drag that file into ChatGPT/Claude/etc for analysis or summarization, and go from there...
+1. Open Slack in your browser (any `*.slack.com` page)
+2. Click the SlackSnap icon — a popup opens showing your configured channels grouped by tier
+3. Tick the channels you want (or use the tier-level "select all" toggles)
+4. Click **Export Selected** and watch the progress bar
+5. Find your markdown files in `Downloads/slack-exports/` by default
+
+The extension exports channels sequentially with a short delay between each to respect Slack's rate limits. If one channel fails, it continues with the rest. Each channel produces its own markdown file, and you can optionally tick "Combined file" to get a single merged export as well.
+
+No complicated setup, no account creation, no sending your data to random servers. Drag those files into ChatGPT/Claude/etc for analysis or summarization, and go from there.
 
 ## Configuration options
 
@@ -53,6 +57,16 @@ Right-click the extension icon and select 'Options' to tweak things:
 - **Timestamps and threads** - Whether to include these (both enabled by default)
 
 The filename template uses standard placeholders: `YYYY` for year, `MM` for month, `DD` for day, `HH` and `mm` for time, and `{channel}` for the channel name. Creates files like `20250729-1841-general.md`.
+
+### Channel configuration
+
+The Options page also has a **Batch Export Channels** section where you manage your channel list. Each channel has a name, Slack channel ID, tier (1-3), and type (channel/dm/group). You can add channels via the form or edit the full list as JSON.
+
+To find a channel ID, open the channel in Slack and grab the `C...` or `D...` segment from the URL. Or use the **"+ Add current channel"** button in the popup, which auto-detects it.
+
+Channels are grouped into tiers for quick selection — handy if you have a core set you export every week and others you only check occasionally.
+
+**Personal config file**: If you want to keep your channel list outside of Chrome storage (e.g. as a backup, or if you've cloned the repo), create a `channels.local.json` file in the project root. The extension loads this on first run to seed your channel list. This file is gitignored so it won't be committed to the repo. See `src/config.js` for the expected format.
 
 ## What the output looks like
 
@@ -129,14 +143,18 @@ No build process required, it's vanilla JavaScript. Clone the repo, load it as a
 
 ```text
 slacksnap/
-├── manifest.json              # Extension configuration
+├── manifest.json              # Extension configuration (Manifest V3)
 ├── src/
 │   ├── background.js         # Handles downloads
-│   ├── content.js            # Main export logic
-│   ├── config.js             # Settings management  
+│   ├── content.js            # Message extraction, API export logic
+│   ├── config.js             # Settings schema and example channel list
 │   └── utils.js              # Text processing utilities
-├── options.html              # Settings interface
+├── popup.html                # Batch export popup UI
+├── popup.js                  # Popup logic: selection, orchestration, progress
+├── popup.css                 # Popup styling
+├── options.html              # Settings interface (general + channel management)
 ├── options.js                # Settings logic
+├── channels.local.json       # Your personal channel config (gitignored)
 └── icons/                    # Extension icons
 ```
 
