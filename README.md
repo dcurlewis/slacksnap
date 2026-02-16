@@ -22,7 +22,7 @@ You'll need to load this as an unpacked extension since it's not in the Chrome W
 1. **Get the code**
 
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/dcurlewis/slacksnap.git
    ```
 
 2. **Load it into Chrome**
