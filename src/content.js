@@ -628,14 +628,14 @@ function formatTimestamp(timestamp) {
     if (timestamp && typeof timestamp === 'string' && timestamp.includes('T')) {
       date = new Date(timestamp);
     }
-    // Handle raw Unix timestamps from API (like "1753160757.123400")
-    else if (timestamp && /^\d{10}(\.\d{6})?$/.test(timestamp)) {
+    // Handle raw Unix timestamps from API (like "1753160757.123400" or with varying decimals)
+    else if (timestamp && /^\d{10}(\.\d+)?$/.test(timestamp)) {
       const unixTimestamp = parseFloat(timestamp) * 1000; // Convert to milliseconds
       date = new Date(unixTimestamp);
     }
     // Try parsing Slack's permalink timestamp formats
-    else if (timestamp && timestamp.includes('p17')) {
-      const match = timestamp.match(/p(\d{10})\d*/);
+    else if (timestamp && String(timestamp).includes('p')) {
+      const match = String(timestamp).match(/p(\d{10})\d*/);
       if (match) {
         const unixTimestamp = parseInt(match[1]) * 1000;
         date = new Date(unixTimestamp);
@@ -662,36 +662,20 @@ function formatTimestamp(timestamp) {
       return timestamp; // Return original if parsing fails
     }
     
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const messageDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    // Always show full date with year - use explicit formatting to avoid locale issues
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = months[date.getMonth()];
+    const day = date.getDate();
+    const year = date.getFullYear();
     
-    // Calculate days difference
-    const diffTime = today.getTime() - messageDate.getTime();
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    let hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12; // the hour '0' should be '12'
+    const minutesStr = String(minutes).padStart(2, '0');
     
-    let dateStr = '';
-    if (diffDays === 0) {
-      dateStr = 'Today';
-    } else if (diffDays === 1) {
-      dateStr = 'Yesterday';
-    } else if (diffDays < 7) {
-      dateStr = date.toLocaleDateString([], { weekday: 'long' });
-    } else {
-      dateStr = date.toLocaleDateString([], { 
-        month: 'short', 
-        day: 'numeric',
-        year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
-      });
-    }
-    
-    const timeStr = date.toLocaleTimeString([], { 
-      hour: '2-digit', 
-      minute: '2-digit',
-      hour12: true
-    });
-    
-    return `${dateStr} ${timeStr}`;
+    return `${month} ${day}, ${year} ${hours}:${minutesStr} ${ampm}`;
   } catch (error) {
     return timestamp;
   }
