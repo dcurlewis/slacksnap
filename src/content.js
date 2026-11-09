@@ -691,8 +691,41 @@ function getSlackAuthToken() {
     if (!config.teams) {
       throw new Error('No Slack teams found in localStorage');
     }
-    
-    const teamId = Object.keys(config.teams)[0];
+
+    // Try to match the workspace currently open in the URL.
+    // Slack URLs look like: /client/{workspaceId}/{channelId}
+    const urlMatch = window.location.pathname.match(/\/client\/([^\/]+)/);
+    const urlWorkspaceId = urlMatch ? urlMatch[1] : null;
+    console.log('🔍 Workspace ID from URL:', urlWorkspaceId);
+    console.log('🔍 Available team IDs in localStorage:', Object.keys(config.teams));
+
+    let teamId = null;
+
+    if (urlWorkspaceId) {
+      // Direct key match (team ID appears as-is in localConfig_v2)
+      if (config.teams[urlWorkspaceId]) {
+        teamId = urlWorkspaceId;
+      } else {
+        // Search teams for a url property or id that matches
+        for (const [id, team] of Object.entries(config.teams)) {
+          if (
+            id === urlWorkspaceId ||
+            team.id === urlWorkspaceId ||
+            team.url?.includes(urlWorkspaceId)
+          ) {
+            teamId = id;
+            break;
+          }
+        }
+      }
+    }
+
+    // Fall back to the first available team
+    if (!teamId) {
+      console.warn('⚠️ Could not match URL workspace to a token; falling back to first team');
+      teamId = Object.keys(config.teams)[0];
+    }
+
     const team = config.teams[teamId];
     
     if (!team || !team.token) {
