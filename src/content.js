@@ -603,7 +603,7 @@ function convertToMarkdown(messages, channelName, config) {
           markdown += `  • **${window.SlackSnapUtils.escapeMarkdown(reply.sender)}**: `;
         }
         if (reply.content) {
-          markdown += `${reply.content}\n`;
+          markdown += `${reply.content.replace(/\n/g, '\n    ')}\n`;
         }
       }
       markdown += `\n`;
@@ -809,12 +809,8 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   
   for (const msg of apiMessages) {
     if (msg.user) userIds.add(msg.user);
-    const mentionMatches = (msg.text || '').match(/<@([A-Z0-9]+)>/g);
-    if (mentionMatches) {
-      mentionMatches.forEach(match => {
-        const userId = match.match(/<@([A-Z0-9]+)>/)[1];
-        userIds.add(userId);
-      });
+    for (const [, userId] of (msg.text || '').matchAll(/<@([A-Z0-9]+)[|>]/g)) {
+      userIds.add(userId);
     }
     if (config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0) {
       // Add delay between thread reply fetches to avoid rate limiting
@@ -827,12 +823,8 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
       threadRepliesCache.set(msg.thread_ts, repliesRaw);
       for (const reply of repliesRaw) {
         if (reply.user) userIds.add(reply.user);
-        const replyMentions = (reply.text || '').match(/<@([A-Z0-9]+)>/g);
-        if (replyMentions) {
-          replyMentions.forEach(match => {
-            const userId = match.match(/<@([A-Z0-9]+)>/)[1];
-            userIds.add(userId);
-          });
+        for (const [, userId] of (reply.text || '').matchAll(/<@([A-Z0-9]+)[|>]/g)) {
+          userIds.add(userId);
         }
       }
     }
@@ -845,8 +837,7 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   const enrichedMessages = [];
   for (const apiMsg of apiMessages) {
     const sender = userMap[apiMsg.user] || 'Unknown User';
-    let content = window.SlackSnapUtils.cleanText(apiMsg.text || '');
-    content = content.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+    const content = window.SlackSnapUtils.slackTextToMarkdown(apiMsg.text || '', userMap);
 
     const threadReplies = [];
     if (config.includeThreadReplies && apiMsg.thread_ts && apiMsg.reply_count > 0) {
@@ -854,8 +845,7 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
       for (const reply of repliesRaw) {
         if (reply.ts === apiMsg.thread_ts) continue;
         const replySender = userMap[reply.user] || 'Unknown User';
-        let replyContent = window.SlackSnapUtils.cleanText(reply.text || '');
-        replyContent = replyContent.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
+        const replyContent = window.SlackSnapUtils.slackTextToMarkdown(reply.text || '', userMap);
         threadReplies.push({ sender: replySender, content: replyContent, timestamp: reply.ts });
       }
     }
