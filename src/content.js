@@ -50,8 +50,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'BATCH_EXPORT_CHANNEL') {
     console.log('📦 Batch export request for channel:', message.channelName);
-    const { channelId, channelName, oldestTimestamp } = message;
-    exportChannelViaAPI(channelId, channelName, oldestTimestamp)
+    const { channelId, channelName, oldestTimestamp, newestTimestamp } = message;
+    exportChannelViaAPI(channelId, channelName, oldestTimestamp, newestTimestamp)
       .then(result => sendResponse({ success: true, ...result }))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true; // async response
@@ -784,9 +784,10 @@ function getCurrentChannelId() {
  * @param {string} channelId - The Slack channel ID to export
  * @param {string} channelName - Human-readable channel name (used in markdown header)
  * @param {number|null} oldestTimestamp - If provided, fetch messages since this Unix ms timestamp; otherwise use historyDays
+ * @param {number|null} newestTimestamp - If provided, fetch messages up to this Unix ms timestamp; otherwise up to now
  * @returns {Promise<Object>} Result with messageCount, markdown, channelName
  */
-async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = null) {
+async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = null, newestTimestamp = null) {
   const config = await getConfig();
   const { token } = getSlackAuthToken();
 
@@ -794,8 +795,10 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     ? Math.floor(oldestTimestamp / 1000)
     : Math.floor((Date.now() - (config.historyDays || 7) * 86400 * 1000) / 1000);
 
-  console.log(`📆 Export window for ${channelName}: since ${new Date(oldestUnix * 1000).toISOString()}`);
-  const apiMessages = await getMessagesViaHistoryAPI(channelId, oldestUnix, token);
+  const latestUnix = newestTimestamp ? Math.floor(newestTimestamp / 1000) : null;
+
+  console.log(`📆 Export window for ${channelName}: ${new Date(oldestUnix * 1000).toISOString()} → ${latestUnix ? new Date(latestUnix * 1000).toISOString() : 'now'}`);
+  const apiMessages = await getMessagesViaHistoryAPI(channelId, oldestUnix, token, latestUnix);
 
   if (!apiMessages || apiMessages.length === 0) {
     console.log(`ℹ️ No messages found for ${channelName} in the selected date range.`);
@@ -819,11 +822,11 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     if (config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0) {
       // Add delay between thread reply fetches to avoid rate limiting
       if (threadFetchCount > 0) {
-        await new Promise(resolve => setTimeout(resolve, 800)); // 800ms delay between thread fetches
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 s between thread fetches
       }
       threadFetchCount++;
       
-      const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token);
+      const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token, 0, latestUnix);
       threadRepliesCache.set(msg.thread_ts, repliesRaw);
       for (const reply of repliesRaw) {
         if (reply.user) userIds.add(reply.user);
@@ -1070,9 +1073,9 @@ async function fetchSingleUser(userId, token) {
  * @param {string} token - Slack auth token
  * @returns {Promise<Array>} Array of message objects
  */
-async function getMessagesViaHistoryAPI(channelId, oldestUnix, token) {
+async function getMessagesViaHistoryAPI(channelId, oldestUnix, token, latestUnix = null) {
   try {
-    console.log(`📥 Fetching messages for channel ${channelId} since ${new Date(oldestUnix * 1000).toISOString()}`);
+    console.log(`📥 Fetching messages for channel ${channelId} since ${new Date(oldestUnix * 1000).toISOString()}${latestUnix ? ` until ${new Date(latestUnix * 1000).toISOString()}` : ''}`);
     
     let allMessages = [];
     let cursor = '';
@@ -1082,19 +1085,24 @@ async function getMessagesViaHistoryAPI(channelId, oldestUnix, token) {
     while (hasMore) {
       pageCount++;
       
-      // Add delay between requests to avoid rate limiting (except for first request)
+      // Wait between pages to stay well within Slack's Tier-3 rate limit
+      // (~50 req/min). 2 s per page = ~30 req/min.
       if (pageCount > 1) {
-        console.log('⏱️ Waiting 1 second to avoid rate limiting...');
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        console.log('⏱️ Waiting 2 seconds between pages to avoid rate limiting...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
       
       const params = new URLSearchParams({
         token: token,
         channel: channelId,
-        limit: '100', // Reduced from 200 to be more gentle
+        limit: '100',
         oldest: oldestUnix.toString(),
         inclusive: 'true'
       });
+
+      if (latestUnix) {
+        params.append('latest', latestUnix.toString());
+      }
       
       if (cursor) {
         params.append('cursor', cursor);
@@ -1168,9 +1176,10 @@ async function getMessagesViaHistoryAPI(channelId, oldestUnix, token) {
  * @param {number} oldestUnix - Oldest timestamp to fetch
  * @param {string} token - Slack auth token
  * @param {number} retryCount - Current retry attempt (internal use)
+ * @param {number|null} latestUnix - Latest timestamp to fetch (optional)
  * @returns {Promise<Array>} Array of reply message objects
  */
-async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount = 0) {
+async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount = 0, latestUnix = null) {
   const maxRetries = 3;
   
   try {
@@ -1183,6 +1192,10 @@ async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryC
       limit: '200',
       oldest: oldestUnix.toString()
     });
+
+    if (latestUnix) {
+      params.append('latest', latestUnix.toString());
+    }
     
     const response = await fetch('/api/conversations.replies', {
       method: 'POST',
@@ -1201,7 +1214,7 @@ async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryC
         const retryAfter = data.response_metadata?.retry_after || Math.pow(2, retryCount) * 2;
         console.log(`⏳ Rate limited, waiting ${retryAfter}s before retry ${retryCount + 1}/${maxRetries}...`);
         await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-        return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1);
+        return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1, latestUnix);
       }
       throw new Error(`conversations.replies API failed: ${data.error}`);
     }
@@ -1214,7 +1227,7 @@ async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryC
       const waitTime = Math.pow(2, retryCount) * 2;
       console.log(`⏳ Rate limit error, waiting ${waitTime}s before retry ${retryCount + 1}/${maxRetries}...`);
       await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
-      return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1);
+      return fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryCount + 1, latestUnix);
     }
     
     console.error('❌ Failed to fetch thread replies:', error);

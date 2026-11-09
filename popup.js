@@ -27,6 +27,11 @@ const settingsBtn = document.getElementById('settingsBtn');
 const quickAddBtn = document.getElementById('quickAddBtn');
 const quickAddSection = document.getElementById('quickAddSection');
 const openOptionsLink = document.getElementById('openOptionsLink');
+const dateFromInput = document.getElementById('dateFrom');
+const dateToInput = document.getElementById('dateTo');
+const dateRangeSection = document.getElementById('dateRangeSection');
+const dateHintEl = document.getElementById('dateHint');
+const DATE_HINT_DEFAULT = dateHintEl.textContent;
 
 // ── Initialisation ─────────────────────────────────────────────────
 
@@ -225,6 +230,18 @@ async function exportSelected() {
   const selected = getSelectedChannels();
   if (selected.length === 0) return;
 
+  // Picker values are local dates (YYYY-MM-DD), so parse them as local time
+  const pickedFrom = dateFromInput.value ? new Date(dateFromInput.value + 'T00:00:00').getTime() : null;
+  const pickedTo = dateToInput.value ? new Date(dateToInput.value + 'T23:59:59.999').getTime() : null;
+
+  if (pickedFrom && pickedTo && pickedFrom > pickedTo) {
+    dateHintEl.textContent = '"From" must be on or before "To".';
+    dateHintEl.classList.add('date-hint-error');
+    return;
+  }
+  dateHintEl.textContent = DATE_HINT_DEFAULT;
+  dateHintEl.classList.remove('date-hint-error');
+
   isExporting = true;
   exportBtn.disabled = true;
   progressSection.style.display = 'block';
@@ -243,11 +260,16 @@ async function exportSelected() {
     setChannelStatus(channel.channelId, 'active');
 
     try {
+      // Explicit picker values take priority over last-exported
+      const fromDate = pickedFrom ?? (lastExportTimestamps[channel.channelId] || null);
+      const toDate = pickedTo;
+
       const response = await chrome.tabs.sendMessage(activeTab.id, {
         action: 'BATCH_EXPORT_CHANNEL',
         channelId: channel.channelId,
         channelName: channel.name,
-        oldestTimestamp: lastExportTimestamps[channel.channelId] || null
+        oldestTimestamp: fromDate,
+        newestTimestamp: toDate
       });
 
       if (response && response.success) {
@@ -268,9 +290,14 @@ async function exportSelected() {
           }
         }
 
-        // Update last exported timestamp
-        lastExportTimestamps[channel.channelId] = Date.now();
-        await saveConfig({ lastExportTimestamps });
+        // Advance the last-exported marker to the end of the window we just fetched.
+        // Never move it backwards, so a one-off historical export doesn't cause the
+        // next incremental export to skip or re-fetch messages.
+        const exportedUpTo = Math.min(toDate ?? Date.now(), Date.now());
+        if (exportedUpTo > (lastExportTimestamps[channel.channelId] || 0)) {
+          lastExportTimestamps[channel.channelId] = exportedUpTo;
+          await saveConfig({ lastExportTimestamps });
+        }
 
         setChannelStatus(channel.channelId, 'success');
         results.push({ channel: channel.name, success: true, count: response.messageCount });
