@@ -45,6 +45,70 @@ function cleanText(text) {
 }
 
 /**
+ * Convert message text from the Slack API into Markdown.
+ *
+ * Slack sends text with its own markup: links as <url|label> or <url>, mentions as
+ * <@U123> / <#C123|name> / <!here>, and escapes only &, < and > as entities. This
+ * converts each of those, then decodes the entities. It never parses the text as
+ * HTML, which previously made the browser treat <https://...> as a tag and drop it.
+ *
+ * @param {string} text - Raw `text` field from a Slack API message
+ * @param {Object} [userMap] - Map of user ID to display name, for <@U123> mentions
+ * @returns {string} Markdown text with line breaks preserved
+ */
+function slackTextToMarkdown(text, userMap = {}) {
+  if (!text) return '';
+
+  const converted = text.replace(/<([^<>]+)>/g, (_, inner) => {
+    const pipe = inner.indexOf('|');
+    const target = pipe === -1 ? inner : inner.slice(0, pipe);
+    const label = pipe === -1 ? '' : inner.slice(pipe + 1);
+
+    // User mention: <@U123> or <@U123|name>
+    if (target.startsWith('@')) {
+      const id = target.slice(1);
+      return '@' + (userMap[id] || label || 'unknown');
+    }
+
+    // Channel link: <#C123|general>
+    if (target.startsWith('#')) {
+      return '#' + (label || target.slice(1));
+    }
+
+    // Special mentions and commands: <!here>, <!subteam^S123|@team>, <!date^...|fallback>
+    if (target.startsWith('!')) {
+      if (label) return label;
+      const name = target.slice(1).split('^')[0];
+      return '@' + name;
+    }
+
+    // Email: <mailto:a@b.com|a@b.com>
+    if (target.startsWith('mailto:')) {
+      return label || target.slice('mailto:'.length);
+    }
+
+    // Link: <url|label> becomes [label](url); a bare <url> stays as the plain URL
+    if (!label || label === target) {
+      return target;
+    }
+    const safeLabel = label.replace(/([[\]])/g, '\\$1');
+    const safeUrl = target.replace(/ /g, '%20').replace(/\(/g, '%28').replace(/\)/g, '%29');
+    return `[${safeLabel}](${safeUrl})`;
+  });
+
+  return converted
+    // Slack only escapes these three; decode &amp; last so "&amp;lt;" stays "&lt;"
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/ /g, ' ')
+    // Keep line breaks and indentation; just drop trailing spaces and extra blank lines
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
  * Extract channel name from current URL or page title
  * @returns {string} Channel name
  */
@@ -263,6 +327,7 @@ if (typeof window !== 'undefined') {
   window.SlackSnapUtils = {
     formatDate,
     cleanText,
+    slackTextToMarkdown,
     extractChannelName,
     generateFilename,
     showNotification,
