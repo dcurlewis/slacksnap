@@ -295,6 +295,10 @@ body {
   margin-top: 2px;
 }
 
+.date-hint-error {
+  color: #e01e5a;
+}
+
 /* Export controls */
 .export-controls {
   padding: 10px 16px;

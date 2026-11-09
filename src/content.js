@@ -1052,8 +1052,8 @@ async function getMessagesViaHistoryAPI(channelId, oldestUnix, token, latestUnix
     while (hasMore) {
       pageCount++;
       
-      // Wait between every page (including the first) to stay well within
-      // Slack's Tier-3 rate limit (~50 req/min). 2 s per page = ~30 req/min.
+      // Wait between pages to stay well within Slack's Tier-3 rate limit
+      // (~50 req/min). 2 s per page = ~30 req/min.
       if (pageCount > 1) {
         console.log('⏱️ Waiting 2 seconds between pages to avoid rate limiting...');
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1074,7 +1074,6 @@ async function getMessagesViaHistoryAPI(channelId, oldestUnix, token, latestUnix
       if (cursor) {
         params.append('cursor', cursor);
       }
-
       
       // Retry logic for rate limiting
       let retryCount = 0;
